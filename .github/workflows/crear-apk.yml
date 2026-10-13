@@ -1,44 +1,39 @@
-name: Compilar APK Android
+name: Build APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 1. Descargar código del repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 2. Configurar entorno Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      - name: 3. Configurar entorno Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: 4. Instalar Capacitor y herramientas PWA para Android
+      - name: Empaquetar APK
         run: |
+          mkdir -p www
+          cp index.html www/index.html
           npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "Mis Finanzas" com.mis.finanzas --web-dir .
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npx cap init Finanzas com.mis.finanzas --web-dir www
           npx cap add android
-
-      - name: 5. Generar APK nativa en modo Debug
-        run: |
+          npx cap copy android
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: 6. Subir el APK generado como artefacto descargable
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: app-finanzas-debug
+          name: app-finanzas-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
