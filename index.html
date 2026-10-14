@@ -1,256 +1,178 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mi Control Financiero</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f172a">
+<title>Mis Finanzas</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+  body { background: #0f172a; color: #f1f5f9; padding: 16px; min-height: 100vh; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .header h1 { font-size: 20px; color: #fff; }
+  .header p { font-size: 12px; color: #94a3b8; }
+  .btn-reset { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+  .grid-resumen { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .card-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+  .card-val { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  .c-white { color: #fff; } .c-green { color: #34d399; } .c-red { color: #fb7185; } .c-indigo { color: #818cf8; } .c-amber { color: #fbbf24; }
+  h2 { font-size: 15px; margin-bottom: 8px; color: #e2e8f0; }
+  p.hint { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+  textarea, input, select { width: 100%; background: #0f172a; color: #fff; border: 1px solid #334155; border-radius: 8px; padding: 10px; font-size: 14px; margin-bottom: 10px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn { width: 100%; border: none; border-radius: 8px; padding: 11px; font-weight: 600; font-size: 14px; color: #fff; cursor: pointer; }
+  .btn-indigo { background: #4f46e5; } .btn-green { background: #059669; }
+  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #334155; margin-bottom: 10px; gap: 4px; }
+  .tab { background: none; border: none; color: #94a3b8; padding: 10px 12px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .tab.active { color: #fff; border-bottom: 2px solid #6366f1; }
+  .item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #334155; font-size: 13px; }
+  .item-info { flex: 1; padding-right: 8px; }
+  .item-date { font-size: 11px; color: #64748b; }
+  .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #0f172a; margin-left: 6px; }
+  .btn-sm { background: #059669; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
+  .btn-del { background: none; border: none; color: #64748b; font-size: 15px; margin-left: 8px; }
+</style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen font-sans p-4 md:p-8">
+<body>
 
-    <div class="max-w-5xl mx-auto space-y-6">
-        <!-- Encabezado -->
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-                <h1 class="text-2xl font-bold text-white">Mis Finanzas y Trading</h1>
-                <p class="text-slate-400 text-sm">Control automático de compras, ganancias, deudas e inversiones</p>
-            </div>
-            <button onclick="limpiarDatos()" class="text-xs bg-red-900/40 hover:bg-red-800/60 text-red-300 px-3 py-2 rounded border border-red-700/50 transition">
-                Reiniciar Datos
-            </button>
-        </div>
-
-        <!-- Tarjetas de Resumen -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                <p class="text-slate-400 text-xs uppercase">Balance Disponible</p>
-                <p id="resumen-balance" class="text-2xl font-bold text-white mt-1">$0</p>
-            </div>
-            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                <p class="text-slate-400 text-xs uppercase">Ganancias / Ingresos</p>
-                <p id="resumen-ganancias" class="text-2xl font-bold text-emerald-400 mt-1">$0</p>
-            </div>
-            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                <p class="text-slate-400 text-xs uppercase">Compras / Gastos</p>
-                <p id="resumen-gastos" class="text-2xl font-bold text-rose-400 mt-1">$0</p>
-            </div>
-            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                <p class="text-slate-400 text-xs uppercase">Inversión / Trading</p>
-                <p id="resumen-trading" class="text-2xl font-bold text-indigo-400 mt-1">$0</p>
-            </div>
-        </div>
-
-        <!-- Registro Manual y Simulador de Notificación -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div class="bg-slate-800 p-5 rounded-xl border border-indigo-500/30 space-y-4">
-                <div class="flex items-center justify-between">
-                    <h2 class="font-semibold text-indigo-400">📲 Escáner de Notificaciones</h2>
-                    <span class="text-xs bg-indigo-950 text-indigo-300 px-2 py-1 rounded">Simulador / Enlace App</span>
-                </div>
-                <p class="text-xs text-slate-400">
-                    Pega una notificación de Nequi, Bancolombia, Daviplata o Nu para probar el registro automático:
-                </p>
-                <textarea id="input-notificacion" rows="3" placeholder="Ej: ¡Te abonaron $150.000! o Compra aprobada por $35.000 en EXITO..." 
-                    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500"></textarea>
-                <button onclick="procesarNotificacion()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2 rounded-lg text-sm transition">
-                    Procesar Notificación
-                </button>
-            </div>
-
-            <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
-                <h2 class="font-semibold text-white">✍️ Registro Manual</h2>
-                <div class="grid grid-cols-2 gap-3">
-                    <select id="manual-tipo" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm">
-                        <option value="gasto">Compra / Gasto</option>
-                        <option value="ganancia">Ganancia / Ingreso</option>
-                        <option value="deuda">Deuda Pendiente</option>
-                        <option value="trading">Trading / Inversión</option>
-                    </select>
-                    <input type="number" id="manual-monto" placeholder="Monto (ej. 50000)" 
-                        class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm">
-                </div>
-                <input type="text" id="manual-desc" placeholder="Descripción (ej. Operación Trading, Supermercado, Préstamo)" 
-                    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm">
-                <button onclick="agregarManual()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2 rounded-lg text-sm transition">
-                    Guardar Registro
-                </button>
-            </div>
-        </div>
-
-        <!-- Listados por Pestañas -->
-        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-            <div class="flex flex-wrap border-b border-slate-700 bg-slate-800/50">
-                <button onclick="cambiarTab('todos')" id="tab-todos" class="px-4 py-3 text-sm font-medium border-b-2 border-indigo-500 text-white">Todos</button>
-                <button onclick="cambiarTab('gasto')" id="tab-gasto" class="px-4 py-3 text-sm font-medium text-slate-400 hover:text-white">🛒 Compras</button>
-                <button onclick="cambiarTab('ganancia')" id="tab-ganancia" class="px-4 py-3 text-sm font-medium text-slate-400 hover:text-white">💰 Ganancias</button>
-                <button onclick="cambiarTab('deuda')" id="tab-deuda" class="px-4 py-3 text-sm font-medium text-slate-400 hover:text-white">⏳ Deudas</button>
-                <button onclick="cambiarTab('trading')" id="tab-trading" class="px-4 py-3 text-sm font-medium text-slate-400 hover:text-white">📈 Trading</button>
-            </div>
-
-            <div class="p-4 overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
-                            <th class="py-2 px-3">Fecha</th>
-                            <th class="py-2 px-3">Tipo</th>
-                            <th class="py-2 px-3">Detalle</th>
-                            <th class="py-2 px-3 text-right">Monto</th>
-                            <th class="py-2 px-3 text-center">Acción</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tabla-movimientos" class="divide-y divide-slate-700/60 text-sm">
-                        <!-- Dinámico -->
-                    </tbody>
-                </table>
-            </div>
-        </div>
+  <div class="header">
+    <div>
+      <h1>Mis Finanzas y Trading</h1>
+      <p>Control de compras, ganancias y deudas</p>
     </div>
+    <button class="btn-reset" onclick="limpiarDatos()">Reiniciar</button>
+  </div>
 
-    <script>
-        let movimientos = JSON.parse(localStorage.getItem('finanzas_movimientos')) || [];
-        let filtroActual = 'todos';
+  <div class="grid-resumen">
+    <div class="card" style="margin:0"><div class="card-label">Balance Disponible</div><div id="res-balance" class="card-val c-white">$0</div></div>
+    <div class="card" style="margin:0"><div class="card-label">Ganancias</div><div id="res-ganancias" class="card-val c-green">$0</div></div>
+    <div class="card" style="margin:0"><div class="card-label">Compras / Gastos</div><div id="res-gastos" class="card-val c-red">$0</div></div>
+    <div class="card" style="margin:0"><div class="card-label">Deudas / Trading</div><div id="res-otros" class="card-val c-amber">$0</div></div>
+  </div>
 
-        const formatoMoneda = (valor) => {
-            return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(valor);
-        };
+  <div class="card">
+    <h2>📲 Escáner de Notificaciones</h2>
+    <p class="hint">Pega el texto de tu notificación de Nequi, Bancolombia, Daviplata o Nu:</p>
+    <textarea id="input-notif" rows="2" placeholder="Ej: Compra por $35.000 o Recibiste $120.000..."></textarea>
+    <button class="btn btn-indigo" onclick="procesarNotificacion()">Analizar y Registrar</button>
+  </div>
 
-        function procesarNotificacion() {
-            const texto = document.getElementById('input-notificacion').value.trim();
-            if (!texto) return alert("Pega el texto de una notificación primero.");
+  <div class="card">
+    <h2>✍️ Registro Manual</h2>
+    <div class="row">
+      <select id="man-tipo">
+        <option value="gasto">🛒 Compra / Gasto</option>
+        <option value="ganancia">💰 Ganancia</option>
+        <option value="deuda">⏳ Deuda</option>
+        <option value="trading">📈 Trading</option>
+      </select>
+      <input type="number" id="man-monto" placeholder="Monto (ej. 50000)">
+    </div>
+    <input type="text" id="man-desc" placeholder="Descripción (ej. Supermercado, Operación)">
+    <button class="btn btn-green" onclick="agregarManual()">Guardar Movimiento</button>
+  </div>
 
-            const regexMonto = /\$?\s?(\d{1,3}(?:[.,]\d{3})+|\d+)/;
-            const matchMonto = texto.match(regexMonto);
-            if (!matchMonto) return alert("No se detectó un monto válido.");
-            
-            const montoLimpio = parseInt(matchMonto[1].replace(/[.,]/g, ''), 10);
-            const textoLower = texto.toLowerCase();
-            let tipo = 'gasto';
+  <div class="card">
+    <div class="tabs">
+      <button class="tab active" id="t-todos" onclick="cambiarTab('todos')">Todos</button>
+      <button class="tab" id="t-gasto" onclick="cambiarTab('gasto')">🛒 Compras</button>
+      <button class="tab" id="t-ganancia" onclick="cambiarTab('ganancia')">💰 Ganancias</button>
+      <button class="tab" id="t-deuda" onclick="cambiarTab('deuda')">⏳ Deudas</button>
+      <button class="tab" id="t-trading" onclick="cambiarTab('trading')">📈 Trading</button>
+    </div>
+    <div id="lista-movimientos"></div>
+  </div>
 
-            if (textoLower.includes('recibiste') || textoLower.includes('abono') || textoLower.includes('te pasaron') || textoLower.includes('consignacion')) {
-                tipo = 'ganancia';
-            } else if (textoLower.includes('deuda') || textoLower.includes('cuota') || textoLower.includes('pendiente')) {
-                tipo = 'deuda';
-            } else if (textoLower.includes('trading') || textoLower.includes('broker') || textoLower.includes('inversion')) {
-                tipo = 'trading';
-            }
+<script>
+  let movs = JSON.parse(localStorage.getItem('finanzas_v2')) || [];
+  let filtro = 'todos';
+  const fmt = (v) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v);
 
-            nuevoMovimiento(tipo, montoLimpio, `📲 ${texto.substring(0, 50)}...`);
-            document.getElementById('input-notificacion').value = '';
-        }
+  function procesarNotificacion() {
+    const txt = document.getElementById('input-notif').value.trim();
+    if (!txt) return alert("Pega el texto de una notificación primero.");
+    const m = txt.match(/\$?\s?(\d{1,3}(?:[.,]\d{3})+|\d+)/);
+    if (!m) return alert("No se encontró un monto válido.");
+    const monto = parseInt(m[1].replace(/[.,]/g, ''), 10);
+    const low = txt.toLowerCase();
+    let tipo = 'gasto';
+    if (low.includes('recibiste') || low.includes('abono') || low.includes('enviaron') || low.includes('consignacion')) tipo = 'ganancia';
+    else if (low.includes('deuda') || low.includes('cuota') || low.includes('pendiente')) tipo = 'deuda';
+    else if (low.includes('trading') || low.includes('broker')) tipo = 'trading';
+    guardarNuevo(tipo, monto, "📲 " + txt.substring(0, 45));
+    document.getElementById('input-notif').value = '';
+  }
 
-        function agregarManual() {
-            const tipo = document.getElementById('manual-tipo').value;
-            const monto = parseInt(document.getElementById('manual-monto').value, 10);
-            const desc = document.getElementById('manual-desc').value.trim();
+  function agregarManual() {
+    const tipo = document.getElementById('man-tipo').value;
+    const monto = parseInt(document.getElementById('man-monto').value, 10);
+    const desc = document.getElementById('man-desc').value.trim();
+    if (!monto || !desc) return alert("Escribe un monto y una descripción.");
+    guardarNuevo(tipo, monto, desc);
+    document.getElementById('man-monto').value = '';
+    document.getElementById('man-desc').value = '';
+  }
 
-            if (!monto || monto <= 0 || !desc) return alert("Completa la descripción y un monto válido.");
-            nuevoMovimiento(tipo, monto, desc);
-            document.getElementById('manual-monto').value = '';
-            document.getElementById('manual-desc').value = '';
-        }
+  function guardarNuevo(tipo, monto, desc) {
+    movs.unshift({ id: Date.now(), fecha: new Date().toLocaleDateString('es-CO', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }), tipo, monto, desc });
+    actualizar();
+  }
 
-        function nuevoMovimiento(tipo, monto, descripcion) {
-            movimientos.unshift({
-                id: Date.now(),
-                fecha: new Date().toLocaleDateString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
-                tipo,
-                monto,
-                descripcion
-            });
-            guardarYRenderizar();
-        }
+  function pagarDeuda(id) {
+    const i = movs.findIndex(x => x.id === id);
+    if (i > -1) { movs[i].tipo = 'gasto'; movs[i].desc = "✅ Pagado: " + movs[i].desc; actualizar(); }
+  }
 
-        function saldarDeuda(id) {
-            const index = movimientos.findIndex(m => m.id === id);
-            if (index !== -1) {
-                movimientos[index].tipo = 'gasto';
-                movimientos[index].descripcion = `✅ Deuda pagada: ${movimientos[index].descripcion}`;
-                guardarYRenderizar();
-            }
-        }
+  function borrar(id) { movs = movs.filter(x => x.id !== id); actualizar(); }
 
-        function eliminarMovimiento(id) {
-            movimientos = movimientos.filter(m => m.id !== id);
-            guardarYRenderizar();
-        }
+  function limpiarDatos() { if (confirm("¿Borrar todos los registros?")) { movs = []; actualizar(); } }
 
-        function cambiarTab(tab) {
-            filtroActual = tab;
-            ['todos', 'gasto', 'ganancia', 'deuda', 'trading'].forEach(t => {
-                const el = document.getElementById(`tab-${t}`);
-                if (el) {
-                    el.className = t === tab 
-                        ? "px-4 py-3 text-sm font-medium border-b-2 border-indigo-500 text-white" 
-                        : "px-4 py-3 text-sm font-medium text-slate-400 hover:text-white";
-                }
-            });
-            renderizar();
-        }
+  function cambiarTab(t) {
+    filtro = t;
+    ['todos','gasto','ganancia','deuda','trading'].forEach(k => {
+      document.getElementById('t-' + k).className = (k === t) ? 'tab active' : 'tab';
+    });
+    render();
+  }
 
-        function guardarYRenderizar() {
-            localStorage.setItem('finanzas_movimientos', JSON.stringify(movimientos));
-            renderizar();
-        }
+  function actualizar() { localStorage.setItem('finanzas_v2', JSON.stringify(movs)); render(); }
 
-        function limpiarDatos() {
-            if (confirm("¿Borrar todo el historial?")) {
-                movimientos = [];
-                guardarYRenderizar();
-            }
-        }
+  function render() {
+    let gan = 0, gas = 0, deu = 0, trd = 0;
+    movs.forEach(m => {
+      if (m.tipo === 'ganancia') gan += m.monto;
+      if (m.tipo === 'gasto') gas += m.monto;
+      if (m.tipo === 'deuda') deu += m.monto;
+      if (m.tipo === 'trading') trd += m.monto;
+    });
+    document.getElementById('res-ganancias').innerText = fmt(gan);
+    document.getElementById('res-gastos').innerText = fmt(gas);
+    document.getElementById('res-otros').innerText = fmt(deu + trd);
+    document.getElementById('res-balance').innerText = fmt(gan - gas);
 
-        function renderizar() {
-            let totalGanancias = 0, totalGastos = 0, totalDeudas = 0, totalTrading = 0;
+    const cont = document.getElementById('lista-movimientos');
+    const lista = filtro === 'todos' ? movs : movs.filter(x => x.tipo === filtro);
+    if (!lista.length) { cont.innerHTML = '<p class="hint" style="text-align:center;padding:14px">Sin movimientos registrados.</p>'; return; }
 
-            movimientos.forEach(m => {
-                if (m.tipo === 'ganancia') totalGanancias += m.monto;
-                if (m.tipo === 'gasto') totalGastos += m.monto;
-                if (m.tipo === 'deuda') totalDeudas += m.monto;
-                if (m.tipo === 'trading') totalTrading += m.monto;
-            });
-
-            document.getElementById('resumen-ganancias').innerText = formatoMoneda(totalGanancias);
-            document.getElementById('resumen-gastos').innerText = formatoMoneda(totalGastos);
-            document.getElementById('resumen-deudas').innerText = formatoMoneda(totalDeudas);
-            document.getElementById('resumen-trading').innerText = formatoMoneda(totalTrading);
-            document.getElementById('resumen-balance').innerText = formatoMoneda(totalGanancias - totalGastos);
-
-            const tbody = document.getElementById('tabla-movimientos');
-            tbody.innerHTML = '';
-
-            const filtrados = filtroActual === 'todos' ? movimientos : movimientos.filter(m => m.tipo === filtroActual);
-
-            if (filtrados.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="text-center py-6 text-slate-500">No hay registros aquí.</td></tr>`;
-                return;
-            }
-
-            filtrados.forEach(m => {
-                const badges = {
-                    ganancia: '<span class="bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded text-xs">Ganancia</span>',
-                    gasto: '<span class="bg-rose-950 text-rose-400 px-2 py-0.5 rounded text-xs">Compra</span>',
-                    deuda: '<span class="bg-amber-950 text-amber-400 px-2 py-0.5 rounded text-xs">Deuda</span>',
-                    trading: '<span class="bg-indigo-950 text-indigo-400 px-2 py-0.5 rounded text-xs">Trading</span>'
-                };
-
-                const colores = { ganancia: 'text-emerald-400', gasto: 'text-rose-400', deuda: 'text-amber-400', trading: 'text-indigo-400' };
-
-                tbody.innerHTML += `
-                    <tr class="hover:bg-slate-700/30">
-                        <td class="py-3 px-3 text-slate-400 text-xs">${m.fecha}</td>
-                        <td class="py-3 px-3">${badges[m.tipo]}</td>
-                        <td class="py-3 px-3 font-medium">${m.descripcion}</td>
-                        <td class="py-3 px-3 text-right font-semibold ${colores[m.tipo]}">${formatoMoneda(m.monto)}</td>
-                        <td class="py-3 px-3 text-center space-x-2">
-                            ${m.tipo === 'deuda' ? `<button onclick="saldarDeuda(${m.id})" class="text-xs bg-emerald-700 hover:bg-emerald-600 px-2 py-1 rounded text-white px-2">Pagar</button>` : ''}
-                            <button onclick="eliminarMovimiento(${m.id})" class="text-xs text-slate-500 hover:text-red-400">✖</button>
-                        </td>
-                    </tr>
-                `;
-            });
-        }
-
-        renderizar();
-    </script>
+    const col = { ganancia: 'c-green', gasto: 'c-red', deuda: 'c-amber', trading: 'c-indigo' };
+    cont.innerHTML = lista.map(m => `
+      <div class="item">
+        <div class="item-info">
+          <div><strong>${m.desc}</strong><span class="badge ${col[m.tipo]}">${m.tipo.toUpperCase()}</span></div>
+          <div class="item-date">${m.fecha}</div>
+        </div>
+        <div style="display:flex;align-items:center">
+          <strong class="${col[m.tipo]}">${fmt(m.monto)}</strong>
+          ${m.tipo === 'deuda' ? `<button class="btn-sm" onclick="pagarDeuda(${m.id})">Pagar</button>` : ''}
+          <button class="btn-del" onclick="borrar(${m.id})">✖</button>
+        </div>
+      </div>
+    `).join('');
+  }
+  render();
+</script>
 </body>
 </html>
