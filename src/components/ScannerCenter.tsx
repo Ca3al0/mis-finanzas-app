@@ -59,6 +59,7 @@ declare global {
   interface Window {
     AndroidNativeBridge?: {
       openNotificationSettings?: () => void;
+      openAppDetailsSettings?: () => void;
       isNotificationListenerEnabled?: () => boolean;
       getCapturedNotificationsJson?: () => string;
       clearCapturedNotifications?: () => void;
@@ -492,44 +493,59 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           </div>
         </div>
 
-        {/* Botones de Acción Rápida para Probar o Capturar Notificaciones */}
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-slate-300 max-w-xl">
-            {hasNativeAndroidBridge ? (
-              <span>
-                📱 <strong>Modo APK Nativo Activo:</strong> Las notificaciones que lleguen a tu Samsung A36 5G se capturan automáticamente en segundo plano.
-              </span>
-            ) : (
-              <span>
-                💡 <strong>En tu celular:</strong> Cuando te llegue una notificación de Nequi o Bancolombia, cópiala y toca <strong>"Pegar y Registrar"</strong> (o instala el APK para lectura automática en segundo plano).
-              </span>
-            )}
+        {/* Guía y Controles para Lectura 100% Automática sin copiar ni pegar */}
+        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-slate-200 font-semibold">
+              ⚡ ¿Cómo dejar activada la lectura 100% AUTOMÁTICA en tu Samsung A36 5G (sin tener que pegar nada)?
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {hasNativeAndroidBridge && !nativePermissionGranted && (
+                <button
+                  type="button"
+                  onClick={() => window.AndroidNativeBridge?.openAppDetailsSettings?.()}
+                  className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition"
+                >
+                  Paso 1: Permitir Ajustes Restringidos
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handlePasteFromClipboard}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5" />
+                Pegar Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onSimulateIncomingNotif(
+                    'Bancolombia',
+                    'Bancolombia: Compra por $42.500 en SUPERMERCADO D1 con tu Tarjeta Débito.'
+                  );
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                Probar Captura Automática
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handlePasteFromClipboard}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition shadow"
-            >
-              <ClipboardPaste className="w-4 h-4" />
-              Pegar Notificación y Registrar
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onSimulateIncomingNotif(
-                  'Bancolombia',
-                  'Bancolombia: Compra por $42.500 en SUPERMERCADO D1 con tu Tarjeta Débito.'
-                );
-              }}
-              className="bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
-              title="Probar cómo el lector captura y procesa una notificación entrante"
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-400" />
-              Probar Lector en Vivo
-            </button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-slate-300">
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+              <strong className="text-emerald-400 block mb-0.5">1. Instalar el APK sin bloqueo</strong>
+              En <strong>Play Store → Perfil → Play Protect → ⚙️</strong> apaga <em>"Analizar apps con Play Protect"</em> por 10 segundos e instala el APK.
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+              <strong className="text-amber-300 block mb-0.5">2. Desbloquear permiso en Samsung</strong>
+              Ve a <strong>Ajustes → Aplicaciones → Mis Finanzas → 3 puntos (⋮) arriba a la derecha → "Permitir ajustes restringidos"</strong>.
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+              <strong className="text-indigo-300 block mb-0.5">3. Activar Acceso a Notificaciones</strong>
+              Activa a <strong>Mis Finanzas</strong> en <em>Acceso a notificaciones</em>. ¡Listo! Leerá Nequi, Bancolombia, Nu y SMS <strong>100% sola sin pegar nada</strong>.
+            </div>
           </div>
         </div>
 

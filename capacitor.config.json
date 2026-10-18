@@ -1,7 +1,8 @@
 {
-  "appId": "com.mis.finanzas",
+  "appId": "com.misfinanzas.personal.a36",
   "appName": "Mis Finanzas",
   "webDir": "dist",
+  "bundledWebRuntime": false,
   "server": {
     "androidScheme": "https"
   }

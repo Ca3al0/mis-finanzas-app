@@ -421,7 +421,7 @@ export function App() {
 
     window.addEventListener('native-notification', onNativeEvent);
 
-    const syncNativeBridgeQueue = () => {
+    const syncNativeBridgeQueue = async () => {
       try {
         if (window.AndroidNativeBridge?.getCapturedNotificationsJson) {
           const rawJson = window.AndroidNativeBridge.getCapturedNotificationsJson();
@@ -439,6 +439,23 @@ export function App() {
         }
       } catch {
         // ignore
+      }
+
+      // 2. Sincronizar también cualquier notificación recibida por el Webhook Automático (/api/webhook/pendientes)
+      try {
+        const res = await fetch('/api/webhook/pendientes');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.items) && data.items.length > 0) {
+            data.items.forEach((item: any) => {
+              if (item?.text) {
+                processIncomingNotification(item.app || 'Notificación Automática', item.text);
+              }
+            });
+          }
+        }
+      } catch {
+        // ignore offline
       }
     };
 

@@ -10,6 +10,8 @@ import {
   Trash2,
   Sparkles,
   User,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   Transaction,
@@ -81,7 +83,6 @@ export const AdvisorAndMobileCenter: React.FC<AdvisorAndMobileCenterProps> = ({
     setIsLoading(true);
 
     try {
-      // Primero verificar si el mensaje contiene una orden directa local (salario, meta, pago fijo)
       const localCheck = solveUserQuestionLocally(q, financialSnapshot);
 
       const response = await callBackendApi<{
@@ -177,13 +178,13 @@ export const AdvisorAndMobileCenter: React.FC<AdvisorAndMobileCenterProps> = ({
 
   const handleDownloadFullCompiledApp = () => {
     window.location.href = '/api/download-full-app';
-    setBackupMessage('✅ Descargando la App Completa en un solo archivo ejecutable.');
+    setBackupMessage('✅ Descargando la App Portátil Completa (No requiere APK ni es bloqueada por Play Protect).');
   };
 
   return (
     <div className="space-y-4">
       {/* Chat Conversacional en Vivo con el Asesor */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[520px] shadow-xl">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[500px] shadow-xl">
         {/* Cabecera del Chat */}
         <div className="bg-slate-950/90 border-b border-slate-800 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -299,12 +300,50 @@ export const AdvisorAndMobileCenter: React.FC<AdvisorAndMobileCenterProps> = ({
         </div>
       </div>
 
-      {/* Descarga e Instalación en Samsung Galaxy A36 5G */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-        <h3 className="text-sm font-bold text-white flex items-center gap-2">
-          <Smartphone className="w-4 h-4 text-emerald-400" />
-          Instalar en tu Samsung Galaxy A36 5G y Copias de Seguridad
-        </h3>
+      {/* Guía Solución al Bloqueo de Google Play Protect + Activación de Lectura 100% Automática en Samsung Galaxy A36 5G */}
+      <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-white">
+              Lectura 100% Automática en tu Samsung Galaxy A36 5G (Cero copiar y pegar)
+            </h3>
+            <p className="text-xs text-slate-400">
+              Por qué Play Protect muestra ese aviso y cómo instalar tu APK con el lector automático <code className="text-emerald-300">BankNotificationListener</code> activo en segundo plano
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5">
+            <strong className="text-emerald-400 block">
+              Paso 1: Instalar el APK en tu Samsung A36
+            </strong>
+            <p className="text-slate-300 leading-relaxed">
+              Como el APK incluye el motor automático que lee notificaciones bancarias por ti, Google Play Protect muestra esa pantalla preventiva. Si te sale <strong>"Se bloqueó la app"</strong>, abre <strong>Play Store → tu foto arriba a la derecha → Play Protect → ⚙️ → desactiva "Analizar apps con Play Protect"</strong> solo por 1 minuto mientras instalas el APK (o toca <strong>"Más detalles" → "Instalar de todos modos"</strong>).
+            </p>
+          </div>
+
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5">
+            <strong className="text-indigo-300 block">
+              Paso 2: Desbloquear "Ajustes restringidos" (1 sola vez)
+            </strong>
+            <p className="text-slate-300 leading-relaxed">
+              En tu Samsung A36 ve a <strong>Ajustes → Aplicaciones → Mis Finanzas</strong>, toca los <strong>3 puntos (⋮)</strong> arriba a la derecha y selecciona <strong>"Permitir ajustes restringidos"</strong> con tu huella o PIN.
+            </p>
+          </div>
+
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5">
+            <strong className="text-amber-300 flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" /> Paso 3: Activar Acceso a Notificaciones
+            </strong>
+            <p className="text-slate-300 leading-relaxed">
+              Abre la app, ve a la pestaña <strong>Escáner</strong>, toca <strong>"Activar Acceso a Notificaciones"</strong> y enciende el interruptor de <strong>Mis Finanzas</strong>. ¡Listo! Cada compra o abono de Nequi, Bancolombia, Daviplata, Nu o SMS se registrará <strong>100% solo sin pegar nada</strong>.
+            </p>
+          </div>
+        </div>
 
         {backupMessage && (
           <div className="bg-emerald-950/80 border border-emerald-600/60 text-emerald-200 px-3.5 py-2 rounded-xl text-xs flex items-center gap-2">
@@ -313,24 +352,24 @@ export const AdvisorAndMobileCenter: React.FC<AdvisorAndMobileCenterProps> = ({
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
           {installPromptEvent ? (
             <button
               type="button"
               onClick={onTriggerInstallPrompt}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow"
             >
-              <Download className="w-4 h-4" />
-              Instalar App en Pantalla de Inicio
+              <Smartphone className="w-4 h-4" />
+              Instalar App Ahora (Sin Bloqueo)
             </button>
           ) : (
             <button
               type="button"
               onClick={handleDownloadFullCompiledApp}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow"
             >
               <HardDriveDownload className="w-4 h-4" />
-              Descargar App Portátil (1 Clic)
+              Descargar App Portátil (Sin Bloqueo)
             </button>
           )}
 

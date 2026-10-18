@@ -7,6 +7,15 @@ import { GoogleGenAI, Type } from '@google/genai';
 const app = express();
 const PORT = 3000;
 
+// Cola en memoria de notificaciones entrantes por Webhook Automático para sincronización sin pegar nada
+interface QueuedWebhookNotification {
+  id: string;
+  app: string;
+  text: string;
+  timestamp: number;
+}
+let webhookNotificationQueue: QueuedWebhookNotification[] = [];
+
 // Habilitar CORS completo para que el APK instalado en el Samsung Galaxy A36 5G pueda conectarse al motor IA
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,6 +29,43 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Endpoint de Webhook Automático: recibe notificaciones bancarias en tiempo real (vía POST o GET)
+// para que se registren solas en la app sin necesidad de copiar ni pegar
+app.all('/api/webhook/notificacion', (req, res) => {
+  const sourceApp = String(
+    req.body?.app || req.body?.title || req.body?.entidad || req.query?.app || req.query?.title || 'Notificación Automática'
+  ).slice(0, 60);
+  const rawText = String(
+    req.body?.text || req.body?.texto || req.body?.body || req.body?.mensaje || req.query?.text || req.query?.texto || ''
+  ).trim();
+
+  if (!rawText) {
+    return res.status(400).json({ ok: false, error: 'Falta el campo text o texto de la notificación' });
+  }
+
+  const item: QueuedWebhookNotification = {
+    id: `wh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    app: sourceApp,
+    text: rawText.slice(0, 1000),
+    timestamp: Date.now(),
+  };
+
+  webhookNotificationQueue.push(item);
+  if (webhookNotificationQueue.length > 100) {
+    webhookNotificationQueue = webhookNotificationQueue.slice(-100);
+  }
+
+  return res.json({ ok: true, received: item });
+});
+
+// Endpoint que la app consulta automáticamente en segundo plano para descargar notificaciones nuevas
+app.get('/api/webhook/pendientes', (_req, res) => {
+  const items = [...webhookNotificationQueue];
+  webhookNotificationQueue = [];
+  return res.json({ items });
+});
 
 function getAiClient(customKey?: string): GoogleGenAI | null {
   const apiKey = (customKey && customKey.trim()) || process.env.GEMINI_API_KEY;
