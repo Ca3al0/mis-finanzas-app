@@ -1,178 +1,24 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" class="dark">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#0f172a">
-<title>Mis Finanzas</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
-  body { background: #0f172a; color: #f1f5f9; padding: 16px; min-height: 100vh; }
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-  .header h1 { font-size: 20px; color: #fff; }
-  .header p { font-size: 12px; color: #94a3b8; }
-  .btn-reset { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
-  .grid-resumen { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-  .card-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
-  .card-val { font-size: 20px; font-weight: 700; margin-top: 4px; }
-  .c-white { color: #fff; } .c-green { color: #34d399; } .c-red { color: #fb7185; } .c-indigo { color: #818cf8; } .c-amber { color: #fbbf24; }
-  h2 { font-size: 15px; margin-bottom: 8px; color: #e2e8f0; }
-  p.hint { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
-  textarea, input, select { width: 100%; background: #0f172a; color: #fff; border: 1px solid #334155; border-radius: 8px; padding: 10px; font-size: 14px; margin-bottom: 10px; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .btn { width: 100%; border: none; border-radius: 8px; padding: 11px; font-weight: 600; font-size: 14px; color: #fff; cursor: pointer; }
-  .btn-indigo { background: #4f46e5; } .btn-green { background: #059669; }
-  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #334155; margin-bottom: 10px; gap: 4px; }
-  .tab { background: none; border: none; color: #94a3b8; padding: 10px 12px; font-size: 13px; font-weight: 600; white-space: nowrap; }
-  .tab.active { color: #fff; border-bottom: 2px solid #6366f1; }
-  .item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #334155; font-size: 13px; }
-  .item-info { flex: 1; padding-right: 8px; }
-  .item-date { font-size: 11px; color: #64748b; }
-  .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #0f172a; margin-left: 6px; }
-  .btn-sm { background: #059669; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
-  .btn-del { background: none; border: none; color: #64748b; font-size: 15px; margin-left: 8px; }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="./manifest.json" />
+  <title>Mis Finanzas y Vida Crediticia</title>
 </head>
-<body>
-
-  <div class="header">
-    <div>
-      <h1>Mis Finanzas y Trading</h1>
-      <p>Control de compras, ganancias y deudas</p>
-    </div>
-    <button class="btn-reset" onclick="limpiarDatos()">Reiniciar</button>
-  </div>
-
-  <div class="grid-resumen">
-    <div class="card" style="margin:0"><div class="card-label">Balance Disponible</div><div id="res-balance" class="card-val c-white">$0</div></div>
-    <div class="card" style="margin:0"><div class="card-label">Ganancias</div><div id="res-ganancias" class="card-val c-green">$0</div></div>
-    <div class="card" style="margin:0"><div class="card-label">Compras / Gastos</div><div id="res-gastos" class="card-val c-red">$0</div></div>
-    <div class="card" style="margin:0"><div class="card-label">Deudas / Trading</div><div id="res-otros" class="card-val c-amber">$0</div></div>
-  </div>
-
-  <div class="card">
-    <h2>📲 Escáner de Notificaciones</h2>
-    <p class="hint">Pega el texto de tu notificación de Nequi, Bancolombia, Daviplata o Nu:</p>
-    <textarea id="input-notif" rows="2" placeholder="Ej: Compra por $35.000 o Recibiste $120.000..."></textarea>
-    <button class="btn btn-indigo" onclick="procesarNotificacion()">Analizar y Registrar</button>
-  </div>
-
-  <div class="card">
-    <h2>✍️ Registro Manual</h2>
-    <div class="row">
-      <select id="man-tipo">
-        <option value="gasto">🛒 Compra / Gasto</option>
-        <option value="ganancia">💰 Ganancia</option>
-        <option value="deuda">⏳ Deuda</option>
-        <option value="trading">📈 Trading</option>
-      </select>
-      <input type="number" id="man-monto" placeholder="Monto (ej. 50000)">
-    </div>
-    <input type="text" id="man-desc" placeholder="Descripción (ej. Supermercado, Operación)">
-    <button class="btn btn-green" onclick="agregarManual()">Guardar Movimiento</button>
-  </div>
-
-  <div class="card">
-    <div class="tabs">
-      <button class="tab active" id="t-todos" onclick="cambiarTab('todos')">Todos</button>
-      <button class="tab" id="t-gasto" onclick="cambiarTab('gasto')">🛒 Compras</button>
-      <button class="tab" id="t-ganancia" onclick="cambiarTab('ganancia')">💰 Ganancias</button>
-      <button class="tab" id="t-deuda" onclick="cambiarTab('deuda')">⏳ Deudas</button>
-      <button class="tab" id="t-trading" onclick="cambiarTab('trading')">📈 Trading</button>
-    </div>
-    <div id="lista-movimientos"></div>
-  </div>
-
-<script>
-  let movs = JSON.parse(localStorage.getItem('finanzas_v2')) || [];
-  let filtro = 'todos';
-  const fmt = (v) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v);
-
-  function procesarNotificacion() {
-    const txt = document.getElementById('input-notif').value.trim();
-    if (!txt) return alert("Pega el texto de una notificación primero.");
-    const m = txt.match(/\$?\s?(\d{1,3}(?:[.,]\d{3})+|\d+)/);
-    if (!m) return alert("No se encontró un monto válido.");
-    const monto = parseInt(m[1].replace(/[.,]/g, ''), 10);
-    const low = txt.toLowerCase();
-    let tipo = 'gasto';
-    if (low.includes('recibiste') || low.includes('abono') || low.includes('enviaron') || low.includes('consignacion')) tipo = 'ganancia';
-    else if (low.includes('deuda') || low.includes('cuota') || low.includes('pendiente')) tipo = 'deuda';
-    else if (low.includes('trading') || low.includes('broker')) tipo = 'trading';
-    guardarNuevo(tipo, monto, "📲 " + txt.substring(0, 45));
-    document.getElementById('input-notif').value = '';
-  }
-
-  function agregarManual() {
-    const tipo = document.getElementById('man-tipo').value;
-    const monto = parseInt(document.getElementById('man-monto').value, 10);
-    const desc = document.getElementById('man-desc').value.trim();
-    if (!monto || !desc) return alert("Escribe un monto y una descripción.");
-    guardarNuevo(tipo, monto, desc);
-    document.getElementById('man-monto').value = '';
-    document.getElementById('man-desc').value = '';
-  }
-
-  function guardarNuevo(tipo, monto, desc) {
-    movs.unshift({ id: Date.now(), fecha: new Date().toLocaleDateString('es-CO', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }), tipo, monto, desc });
-    actualizar();
-  }
-
-  function pagarDeuda(id) {
-    const i = movs.findIndex(x => x.id === id);
-    if (i > -1) { movs[i].tipo = 'gasto'; movs[i].desc = "✅ Pagado: " + movs[i].desc; actualizar(); }
-  }
-
-  function borrar(id) { movs = movs.filter(x => x.id !== id); actualizar(); }
-
-  function limpiarDatos() { if (confirm("¿Borrar todos los registros?")) { movs = []; actualizar(); } }
-
-  function cambiarTab(t) {
-    filtro = t;
-    ['todos','gasto','ganancia','deuda','trading'].forEach(k => {
-      document.getElementById('t-' + k).className = (k === t) ? 'tab active' : 'tab';
-    });
-    render();
-  }
-
-  function actualizar() { localStorage.setItem('finanzas_v2', JSON.stringify(movs)); render(); }
-
-  function render() {
-    let gan = 0, gas = 0, deu = 0, trd = 0;
-    movs.forEach(m => {
-      if (m.tipo === 'ganancia') gan += m.monto;
-      if (m.tipo === 'gasto') gas += m.monto;
-      if (m.tipo === 'deuda') deu += m.monto;
-      if (m.tipo === 'trading') trd += m.monto;
-    });
-    document.getElementById('res-ganancias').innerText = fmt(gan);
-    document.getElementById('res-gastos').innerText = fmt(gas);
-    document.getElementById('res-otros').innerText = fmt(deu + trd);
-    document.getElementById('res-balance').innerText = fmt(gan - gas);
-
-    const cont = document.getElementById('lista-movimientos');
-    const lista = filtro === 'todos' ? movs : movs.filter(x => x.tipo === filtro);
-    if (!lista.length) { cont.innerHTML = '<p class="hint" style="text-align:center;padding:14px">Sin movimientos registrados.</p>'; return; }
-
-    const col = { ganancia: 'c-green', gasto: 'c-red', deuda: 'c-amber', trading: 'c-indigo' };
-    cont.innerHTML = lista.map(m => `
-      <div class="item">
-        <div class="item-info">
-          <div><strong>${m.desc}</strong><span class="badge ${col[m.tipo]}">${m.tipo.toUpperCase()}</span></div>
-          <div class="item-date">${m.fecha}</div>
-        </div>
-        <div style="display:flex;align-items:center">
-          <strong class="${col[m.tipo]}">${fmt(m.monto)}</strong>
-          ${m.tipo === 'deuda' ? `<button class="btn-sm" onclick="pagarDeuda(${m.id})">Pagar</button>` : ''}
-          <button class="btn-del" onclick="borrar(${m.id})">✖</button>
-        </div>
-      </div>
-    `).join('');
-  }
-  render();
-</script>
+<body class="bg-slate-950 text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
 </body>
 </html>

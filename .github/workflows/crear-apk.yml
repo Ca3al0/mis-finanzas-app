@@ -1,8 +1,8 @@
-name: Build APK
+name: Build Native Android APK (Samsung A36 5G)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -13,20 +13,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Empaquetar APK
+      - name: Compilar Aplicación y Empaquetar APK Nativo Android
         run: |
-          mkdir -p www
-          cp index.html www/index.html
-          npm init -y
+          npm install
+          npm run build
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
-          npx cap init Finanzas com.mis.finanzas --web-dir www
+          [ -f capacitor.config.json ] || npx cap init "Mis Finanzas" com.mis.finanzas --web-dir dist
           npx cap add android
           npx cap copy android
           cd android
@@ -35,5 +34,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: app-finanzas-apk
+          name: app-finanzas-samsung-a36-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk

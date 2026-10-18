@@ -1,0 +1,10 @@
+{
+  "name": "Mis Finanzas y Vida Crediticia",
+  "description": "Plataforma inteligente para gestionar finanzas personales, analizar notificaciones bancarias, extractos PDF, imágenes de recibos y correos, calcular promedios, simular créditos y priorizar deudas.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
