@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Wallet,
   TrendingUp,
@@ -10,20 +10,24 @@ import {
   Plus,
   Trash2,
   CheckCircle2,
-  RotateCcw,
   Lock,
   Unlock,
   Search,
   Smartphone,
-  ShieldCheck,
+  Target,
+  Bell,
 } from 'lucide-react';
 import {
   Transaction,
   CreditObligation,
   TransactionType,
   TransactionCategory,
+  SalaryProfile,
+  RecurringPayment,
+  FinancialGoal,
+  AdvisorActionCommand,
+  ProcessedNotificationRecord,
 } from './types/finance';
-import { INITIAL_TRANSACTIONS, INITIAL_CREDITS } from './data/sampleData';
 import {
   formatCurrency,
   CurrencyCode,
@@ -36,16 +40,33 @@ import {
   safePositiveNumber,
   hashPin,
 } from './utils/securityAndValidation';
+import { runOnDeviceFinancialAnalysis } from './utils/localAnalyzer';
+import { SalaryBillsGoalsCenter } from './components/SalaryBillsGoalsCenter';
 import { ScannerCenter } from './components/ScannerCenter';
 import { CreditLifeCenter } from './components/CreditLifeCenter';
 import { CalculatorsCenter } from './components/CalculatorsCenter';
 import { AdvisorAndMobileCenter } from './components/AdvisorAndMobileCenter';
 
-type MainSection = 'movimientos' | 'escaner' | 'creditos' | 'calculos' | 'asesor';
+type MainSection = 'mimes' | 'escaner' | 'calculos' | 'creditos' | 'asesor';
 
-const STORAGE_KEY_TX = 'finanzas_v2_transactions';
-const STORAGE_KEY_CREDITS = 'finanzas_v2_credits';
+const STORAGE_KEY_TX = 'mis_finanzas_real_tx_v3';
+const STORAGE_KEY_CREDITS = 'mis_finanzas_real_credits_v3';
+const STORAGE_KEY_SALARY = 'mis_finanzas_real_salary_v3';
+const STORAGE_KEY_BILLS = 'mis_finanzas_real_bills_v3';
+const STORAGE_KEY_GOALS = 'mis_finanzas_real_goals_v3';
+const STORAGE_KEY_SCAN_HISTORY = 'mis_finanzas_scanner_history_v3';
 const STORAGE_KEY_PIN = 'finanzas_v2_pin_hash';
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+const DEFAULT_SALARY: SalaryProfile = {
+  salarioMensualNeto: 0,
+  otrosIngresosFijos: 0,
+  frecuenciaPago: 'mensual',
+  diaPago1: 15,
+  diaPago2: 30,
+  metaAhorroPorcentaje: 20,
+};
 
 const CATEGORIES_BY_TYPE: Record<TransactionType, TransactionCategory[]> = {
   gasto: [
@@ -71,41 +92,116 @@ const CATEGORIES_BY_TYPE: Record<TransactionType, TransactionCategory[]> = {
 };
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<MainSection>('movimientos');
+  const [activeSection, setActiveSection] = useState<MainSection>('mimes');
   const [currency, setCurrency] = useState<CurrencyCode>('COP');
 
-  // Inicialización segura con validación anti-corrupción y migración compatible con 'finanzas_v2' original
+  // 1. Transacciones reales del usuario (0 datos falsos por defecto)
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     try {
-      const savedV2 = localStorage.getItem(STORAGE_KEY_TX);
-      if (savedV2) {
-        const validated = validateTransactionsArray(JSON.parse(savedV2));
-        if (validated.length > 0) return validated;
+      const savedV3 = localStorage.getItem(STORAGE_KEY_TX);
+      if (savedV3) {
+        return validateTransactionsArray(JSON.parse(savedV3), true);
       }
-      // Compatibilidad con la llave original 'finanzas_v2' del index.html previo del usuario
-      const legacy = localStorage.getItem('finanzas_v2');
-      if (legacy) {
-        const validatedLegacy = validateTransactionsArray(JSON.parse(legacy));
-        if (validatedLegacy.length > 0) return validatedLegacy;
+      const savedV2 = localStorage.getItem('finanzas_v2_transactions');
+      if (savedV2) {
+        return validateTransactionsArray(JSON.parse(savedV2), true);
       }
     } catch {
-      // Si hay corrupción en localStorage, restaurar base limpia
+      // Base limpia
     }
-    return INITIAL_TRANSACTIONS;
+    return [];
   });
 
+  // 2. Obligaciones crediticias reales del usuario (0 tarjetas falsas por defecto)
   const [credits, setCredits] = useState<CreditObligation[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_CREDITS);
-      if (saved) {
-        const validated = validateCreditsArray(JSON.parse(saved));
-        if (validated.length > 0) return validated;
+      const savedV3 = localStorage.getItem(STORAGE_KEY_CREDITS);
+      if (savedV3) {
+        return validateCreditsArray(JSON.parse(savedV3), true);
+      }
+      const savedV2 = localStorage.getItem('finanzas_v2_credits');
+      if (savedV2) {
+        return validateCreditsArray(JSON.parse(savedV2), true);
       }
     } catch {
-      // Fallback seguro
+      // Base limpia
     }
-    return INITIAL_CREDITS;
+    return [];
   });
+
+  // 3. Salario e ingreso fijo mensual del usuario
+  const [salaryProfile, setSalaryProfile] = useState<SalaryProfile>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SALARY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          salarioMensualNeto: safePositiveNumber(parsed.salarioMensualNeto, 0),
+          otrosIngresosFijos: safePositiveNumber(parsed.otrosIngresosFijos, 0),
+          frecuenciaPago: parsed.frecuenciaPago || 'mensual',
+          diaPago1: parsed.diaPago1 || 15,
+          diaPago2: parsed.diaPago2 || 30,
+          metaAhorroPorcentaje: parsed.metaAhorroPorcentaje || 20,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_SALARY;
+  });
+
+  // 4. Pagos fijos mensuales ("Cosas que pago cada mes")
+  const [recurringPayments, setRecurringPayments] = useState<RecurringPayment[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_BILLS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+
+  // 5. Metas financieras y propósitos de ahorro
+  const [goals, setGoals] = useState<FinancialGoal[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_GOALS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+
+  // 6. Historial de notificaciones procesadas con éxito (últimos 30 días)
+  const [processedNotificationsHistory, setProcessedNotificationsHistory] = useState<
+    ProcessedNotificationRecord[]
+  >(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SCAN_HISTORY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const cutoff = Date.now() - THIRTY_DAYS_MS;
+          return parsed.filter((item) => item && typeof item.timestamp === 'number' && item.timestamp >= cutoff);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+
+  // Bandeja de notificaciones capturadas en tiempo real
+  const [autoCapturedNotifs, setAutoCapturedNotifs] = useState<
+    { id: string; app: string; text: string; time: string }[]
+  >([]);
+  const [liveToast, setLiveToast] = useState<string | null>(null);
 
   // Formulario de registro manual rápido
   const [manTipo, setManTipo] = useState<TransactionType>('gasto');
@@ -119,7 +215,7 @@ export function App() {
   const [filtroTipo, setFiltroTipo] = useState<string>('todos');
   const [busqueda, setBusqueda] = useState<string>('');
 
-  // Bloqueo opcional por PIN de 4 dígitos para privacidad en el Samsung A36 5G
+  // Bloqueo opcional por PIN de 4 dígitos
   const [pinHash, setPinHash] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY_PIN));
   const [isLocked, setIsLocked] = useState<boolean>(() => Boolean(localStorage.getItem(STORAGE_KEY_PIN)));
   const [pinInput, setPinInput] = useState('');
@@ -139,11 +235,12 @@ export function App() {
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
+  // Persistencia automática en localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_TX, JSON.stringify(transactions));
     } catch {
-      // Ignorar si almacenamiento lleno
+      // ignore
     }
   }, [transactions]);
 
@@ -151,13 +248,211 @@ export function App() {
     try {
       localStorage.setItem(STORAGE_KEY_CREDITS, JSON.stringify(credits));
     } catch {
-      // Ignorar si almacenamiento lleno
+      // ignore
     }
   }, [credits]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SALARY, JSON.stringify(salaryProfile));
+    } catch {
+      // ignore
+    }
+  }, [salaryProfile]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_BILLS, JSON.stringify(recurringPayments));
+    } catch {
+      // ignore
+    }
+  }, [recurringPayments]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_GOALS, JSON.stringify(goals));
+    } catch {
+      // ignore
+    }
+  }, [goals]);
+
+  useEffect(() => {
+    try {
+      const cutoff = Date.now() - THIRTY_DAYS_MS;
+      const pruned = processedNotificationsHistory.filter((item) => item.timestamp >= cutoff);
+      localStorage.setItem(STORAGE_KEY_SCAN_HISTORY, JSON.stringify(pruned));
+    } catch {
+      // ignore
+    }
+  }, [processedNotificationsHistory]);
+
+  const showToast = useCallback((msg: string) => {
+    setLiveToast(msg);
+    setTimeout(() => {
+      setLiveToast((prev) => (prev === msg ? null : prev));
+    }, 4500);
+  }, []);
+
+  const handleRecordProcessedNotification = useCallback(
+    (record: Omit<ProcessedNotificationRecord, 'id' | 'timestamp' | 'fechaStr'>) => {
+      const now = Date.now();
+      const fechaStr = new Date(now).toLocaleDateString('es-CO', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const newEntry: ProcessedNotificationRecord = {
+        ...record,
+        id: `scan-hist-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: now,
+        fechaStr,
+      };
+      setProcessedNotificationsHistory((prev) => {
+        const cutoff = now - THIRTY_DAYS_MS;
+        return [newEntry, ...prev.filter((item) => item.timestamp >= cutoff)];
+      });
+    },
+    []
+  );
+
+  const handleDeleteProcessedRecord = useCallback((id: string) => {
+    setProcessedNotificationsHistory((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
+  const handleClearProcessedHistory = useCallback(() => {
+    setProcessedNotificationsHistory([]);
+  }, []);
+
+  const handleAddMultipleTransactions = useCallback(
+    (items: Omit<Transaction, 'id' | 'fecha' | 'timestamp'>[]) => {
+      const nowStr = new Date().toLocaleDateString('es-CO', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const created: Transaction[] = items
+        .filter((i) => safePositiveNumber(i.monto, 0) > 0)
+        .map((item, idx) => ({
+          ...item,
+          id: `tx-${Date.now()}-${idx}`,
+          fecha: nowStr,
+          timestamp: Date.now() + idx,
+          monto: safePositiveNumber(item.monto, 0),
+          desc: sanitizeTextInput(item.desc, 140),
+          entidad: sanitizeTextInput(item.entidad || 'Banco', 40),
+        }));
+
+      if (created.length > 0) {
+        setTransactions((prev) => [...created, ...prev]);
+      }
+    },
+    []
+  );
+
+  // Escucha activa de notificaciones del puente nativo Android (APK en Samsung A36 5G) y eventos en tiempo real
+  const processIncomingNotification = useCallback(
+    (app: string, text: string) => {
+      const cleanText = sanitizeTextInput(text, 600);
+      if (!cleanText) return;
+
+      const parsed = runOnDeviceFinancialAnalysis({
+        sourceType: 'notificacion',
+        text: `${app}: ${cleanText}`,
+      });
+
+      if (parsed.movimientosDetectados.length > 0) {
+        const first = parsed.movimientosDetectados[0];
+        const total = parsed.movimientosDetectados.reduce((acc, m) => acc + m.monto, 0);
+
+        handleAddMultipleTransactions(
+          parsed.movimientosDetectados.map((m) => ({
+            tipo: m.tipo,
+            categoria: m.categoria,
+            monto: m.monto,
+            desc: `📲 ${m.desc}`,
+            entidad: m.entidad || app,
+            cuotas: m.cuotas || 1,
+            fuente: 'notificacion',
+            esEsencial: m.esEsencial ?? true,
+          }))
+        );
+
+        handleRecordProcessedNotification({
+          fuente: 'notificacion',
+          entidad: first.entidad || app,
+          textoOriginal: cleanText,
+          resumen: first.desc,
+          montoTotal: total,
+          tipoPrincipal: first.tipo,
+          categoriaPrincipal: first.categoria,
+          itemsCount: parsed.movimientosDetectados.length,
+        });
+
+        showToast(
+          `📲 Notificación registrada automáticamente: ${first.tipo === 'ganancia' ? '+' : '-'}${formatCurrency(
+            first.monto,
+            currency
+          )} (${first.entidad})`
+        );
+      } else {
+        setAutoCapturedNotifs((prev) => [
+          {
+            id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            app: app || 'Notificación',
+            text: cleanText,
+            time: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+          },
+          ...prev,
+        ]);
+      }
+    },
+    [currency, handleAddMultipleTransactions, handleRecordProcessedNotification, showToast]
+  );
+
+  useEffect(() => {
+    const onNativeEvent = (e: Event) => {
+      const custom = e as CustomEvent<{ app?: string; text?: string }>;
+      if (custom.detail?.text) {
+        processIncomingNotification(custom.detail.app || 'Banco Android', custom.detail.text);
+      }
+    };
+
+    window.addEventListener('native-notification', onNativeEvent);
+
+    const syncNativeBridgeQueue = () => {
+      try {
+        if (window.AndroidNativeBridge?.getCapturedNotificationsJson) {
+          const rawJson = window.AndroidNativeBridge.getCapturedNotificationsJson();
+          if (rawJson && rawJson !== '[]') {
+            const list = JSON.parse(rawJson);
+            if (Array.isArray(list) && list.length > 0) {
+              list.forEach((item: any) => {
+                if (item?.text) {
+                  processIncomingNotification(item.app || 'Android', item.text);
+                }
+              });
+              window.AndroidNativeBridge.clearCapturedNotifications?.();
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    syncNativeBridgeQueue();
+    const interval = setInterval(syncNativeBridgeQueue, 4000);
+    return () => {
+      window.removeEventListener('native-notification', onNativeEvent);
+      clearInterval(interval);
+    };
+  }, [processIncomingNotification]);
+
   const metrics = useMemo(
-    () => calculateFinancialMetrics(transactions, credits),
-    [transactions, credits]
+    () => calculateFinancialMetrics(transactions, credits, salaryProfile, recurringPayments, goals),
+    [transactions, credits, salaryProfile, recurringPayments, goals]
   );
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -187,31 +482,178 @@ export function App() {
     setTransactions((prev) => [nuevo, ...prev]);
     setManMonto('');
     setManDesc('');
+    showToast(`✅ Movimiento guardado: ${formatCurrency(montoNum, currency)}`);
   };
 
-  const handleAddMultipleTransactions = (
-    items: Omit<Transaction, 'id' | 'fecha' | 'timestamp'>[]
-  ) => {
-    const nowStr = new Date().toLocaleDateString('es-CO', {
-      day: '2-digit',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const created: Transaction[] = items
-      .filter((i) => safePositiveNumber(i.monto, 0) > 0)
-      .map((item, idx) => ({
-        ...item,
-        id: `tx-${Date.now()}-${idx}`,
-        fecha: nowStr,
-        timestamp: Date.now() + idx,
-        monto: safePositiveNumber(item.monto, 0),
-        desc: sanitizeTextInput(item.desc, 140),
-        entidad: sanitizeTextInput(item.entidad || 'Banco', 40),
-      }));
+  // Funciones de Salario, Pagos Fijos ("Cosas que pago") y Metas
+  const handleDepositSalaryNow = (amount: number, label: string) => {
+    handleAddMultipleTransactions([
+      {
+        tipo: 'ganancia',
+        categoria: 'Salario / Ingreso Principal',
+        monto: amount,
+        desc: `💰 ${label}`,
+        entidad: 'Nómina / Salario',
+        fuente: 'manual',
+        esEsencial: true,
+      },
+    ]);
+    showToast(`💰 ¡Ingreso de ${formatCurrency(amount, currency)} sumado a tu historial!`);
+  };
 
-    if (created.length > 0) {
-      setTransactions((prev) => [...created, ...prev]);
+  const handleAddRecurringPayment = (item: Omit<RecurringPayment, 'id' | 'pagadoEsteMes'>) => {
+    const nuevo: RecurringPayment = {
+      ...item,
+      id: `bill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      pagadoEsteMes: false,
+    };
+    setRecurringPayments((prev) => [...prev, nuevo]);
+    showToast(`📅 Pago fijo "${item.nombre}" agregado a tu mes.`);
+  };
+
+  const handleTogglePayRecurring = (id: string) => {
+    const target = recurringPayments.find((p) => p.id === id);
+    if (!target) return;
+
+    const willBePaid = !target.pagadoEsteMes;
+    setRecurringPayments((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              pagadoEsteMes: willBePaid,
+              ultimoPagoFecha: willBePaid ? new Date().toLocaleDateString('es-CO') : undefined,
+            }
+          : p
+      )
+    );
+
+    if (willBePaid) {
+      handleAddMultipleTransactions([
+        {
+          tipo: 'gasto',
+          categoria: target.categoria,
+          monto: target.monto,
+          desc: `✅ Pago mensual: ${target.nombre}`,
+          entidad: 'Pago Fijo',
+          fuente: 'manual',
+          esEsencial: true,
+        },
+      ]);
+      showToast(`✅ "${target.nombre}" marcado como pagado y registrado en tus gastos.`);
+    }
+  };
+
+  const handleResetMonthlyPayments = () => {
+    setRecurringPayments((prev) => prev.map((p) => ({ ...p, pagadoEsteMes: false })));
+    showToast('🔄 Todos tus pagos fijos quedaron listos para el nuevo mes.');
+  };
+
+  const handleDeleteRecurringPayment = (id: string) => {
+    setRecurringPayments((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const handleAddGoal = (goal: Omit<FinancialGoal, 'id' | 'montoAhorrado'>) => {
+    const nueva: FinancialGoal = {
+      ...goal,
+      id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      montoAhorrado: 0,
+    };
+    setGoals((prev) => [...prev, nueva]);
+    showToast(`🎯 Meta "${goal.nombre}" creada.`);
+  };
+
+  const handleContributeGoal = (id: string, amount: number) => {
+    const target = goals.find((g) => g.id === id);
+    if (!target || amount <= 0) return;
+
+    setGoals((prev) =>
+      prev.map((g) => (g.id === id ? { ...g, montoAhorrado: g.montoAhorrado + amount } : g))
+    );
+
+    handleAddMultipleTransactions([
+      {
+        tipo: 'gasto',
+        categoria: 'Ahorro para Meta',
+        monto: amount,
+        desc: `🎯 Ahorro abonado a meta: ${target.nombre}`,
+        entidad: 'Ahorro Personal',
+        fuente: 'manual',
+        esEsencial: true,
+      },
+    ]);
+    showToast(`🎯 ¡Abonaste ${formatCurrency(amount, currency)} a tu meta "${target.nombre}"!`);
+  };
+
+  const handleDeleteGoal = (id: string) => {
+    setGoals((prev) => prev.filter((g) => g.id !== id));
+  };
+
+  // Ejecución automática de acciones ordenadas al Asesor IA en lenguaje natural
+  const handleExecuteAdvisorActions = (actions: AdvisorActionCommand[]) => {
+    for (const act of actions) {
+      const d = act.datos || {};
+      if (act.tipoAccion === 'actualizar_salario') {
+        const monto = safePositiveNumber(d.salarioMensualNeto ?? d.monto, 0);
+        if (monto > 0) {
+          setSalaryProfile((prev) => ({
+            ...prev,
+            salarioMensualNeto: monto,
+            frecuenciaPago: d.frecuenciaPago || prev.frecuenciaPago,
+          }));
+        }
+      } else if (act.tipoAccion === 'agregar_pago_fijo') {
+        const monto = safePositiveNumber(d.monto, 0);
+        if (monto > 0) {
+          handleAddRecurringPayment({
+            nombre: sanitizeTextInput(d.nombre || 'Pago Mensual', 50),
+            monto,
+            diaVencimiento: Math.max(1, Math.min(31, Number(d.diaVencimiento) || 5)),
+            categoria: (d.categoria as TransactionCategory) || 'Vivienda y Servicios',
+          });
+        }
+      } else if (act.tipoAccion === 'agregar_meta') {
+        const monto = safePositiveNumber(d.montoObjetivo ?? d.monto, 0);
+        if (monto > 0) {
+          handleAddGoal({
+            nombre: sanitizeTextInput(d.nombre || 'Meta de Ahorro', 50),
+            montoObjetivo: monto,
+            plazoMeses: Math.max(1, Number(d.plazoMeses) || 6),
+            prioridad: 'alta',
+          });
+        }
+      } else if (act.tipoAccion === 'registrar_movimiento') {
+        const monto = safePositiveNumber(d.monto, 0);
+        if (monto > 0) {
+          handleAddMultipleTransactions([
+            {
+              tipo: (d.tipoMovimiento || d.tipo || 'gasto') as TransactionType,
+              categoria: (d.categoria as TransactionCategory) || 'Otros',
+              monto,
+              desc: sanitizeTextInput(d.desc || d.nombre || 'Movimiento desde Asesor', 90),
+              entidad: sanitizeTextInput(d.entidad || 'General', 40),
+              fuente: 'manual',
+              esEsencial: Boolean(d.esEsencial ?? true),
+            },
+          ]);
+        }
+      } else if (act.tipoAccion === 'agregar_deuda') {
+        const saldo = safePositiveNumber(d.monto, 0);
+        if (saldo > 0) {
+          handleAddOrUpdateCredit({
+            nombre: sanitizeTextInput(d.nombre || 'Obligación Crediticia', 60),
+            entidad: sanitizeTextInput(d.entidad || 'Banco', 40),
+            tipo: 'tarjeta_credito',
+            cupoTotal: safePositiveNumber(d.cupoTotal, saldo),
+            saldoActual: saldo,
+            tasaEA: safePositiveNumber(d.tasaEA, 28.5),
+            cuotaMinima: Math.max(50000, Math.round(saldo * 0.08)),
+            diaCorte: 15,
+            diaPago: 2,
+            enMora: false,
+          });
+        }
+      }
     }
   };
 
@@ -271,27 +713,30 @@ export function App() {
       tipo: 'pago_credito',
       categoria: 'Cuota Tarjeta / Crédito',
       monto: validAmount,
-      desc: `💳 Abono a obligación: ${sanitizeTextInput(nombre, 80)}`,
+      desc: `💳 Abono a deuda: ${sanitizeTextInput(nombre, 80)}`,
       entidad: nombre,
       fuente: 'manual',
       esEsencial: true,
     };
     setTransactions((prev) => [pagoTx, ...prev]);
+    showToast(`💳 Abono de ${formatCurrency(validAmount, currency)} aplicado a ${nombre}.`);
   };
 
   const handleDeleteCredit = (id: string) => {
     setCredits((prev) => prev.filter((c) => c.id !== id));
   };
 
-  const handleResetOrLoadExample = () => {
-    setTransactions(INITIAL_TRANSACTIONS);
-    setCredits(INITIAL_CREDITS);
-  };
-
   const handleClearAll = () => {
-    if (window.confirm('¿Deseas dejar todos los registros en cero para empezar desde cero?')) {
+    if (window.confirm('¿Deseas borrar todos los datos registrados y dejar la aplicación completamente en cero?')) {
       setTransactions([]);
       setCredits([]);
+      setSalaryProfile(DEFAULT_SALARY);
+      setRecurringPayments([]);
+      setGoals([]);
+      setProcessedNotificationsHistory([]);
+      localStorage.removeItem('finanzas_v2_transactions');
+      localStorage.removeItem('finanzas_v2_credits');
+      showToast('🧹 Todos los registros quedaron limpios en $0.');
     }
   };
 
@@ -318,7 +763,7 @@ export function App() {
     });
   }, [transactions, filtroTipo, busqueda]);
 
-  // Pantalla de desbloqueo por PIN si el usuario activó el candado de privacidad en su Samsung A36 5G
+  // Pantalla de desbloqueo por PIN si el usuario activó el candado de privacidad
   if (isLocked && pinHash) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -328,7 +773,7 @@ export function App() {
           </div>
           <h1 className="text-lg font-bold text-white">Mis Finanzas Protegidas</h1>
           <p className="text-xs text-slate-400">
-            Ingresa tu PIN de 4 dígitos para desbloquear tu información financiera en tu Samsung A36 5G
+            Ingresa tu PIN de 4 dígitos para desbloquear tu información financiera
           </p>
           <input
             type="password"
@@ -361,11 +806,27 @@ export function App() {
     );
   }
 
+  const navItems: { id: MainSection; label: string; shortLabel: string; icon: any }[] = [
+    { id: 'mimes', label: 'Mi Mes (Salario, Pagos y Metas)', shortLabel: 'Mi Mes', icon: Wallet },
+    { id: 'escaner', label: 'Notificaciones y Escáner', shortLabel: 'Escáner', icon: Bell },
+    { id: 'calculos', label: 'Cálculos, Promedios y Cuotas', shortLabel: 'Cálculos', icon: Calculator },
+    { id: 'creditos', label: 'Deudas y Vida Crediticia', shortLabel: 'Deudas', icon: CreditCard },
+    { id: 'asesor', label: 'Asesor IA y Descarga A36', shortLabel: 'Asesor IA', icon: Bot },
+  ];
+
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100 pb-24">
-      {/* Cabecera Superior */}
+    <div className="min-h-screen bg-[#070b14] text-slate-100 pb-24">
+      {/* Notificación flotante en vivo */}
+      {liveToast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] bg-emerald-950/95 border border-emerald-500 text-emerald-100 px-4 py-3 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{liveToast}</span>
+        </div>
+      )}
+
+      {/* Cabecera Limpia y Ordenada */}
       <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-3">
-        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-emerald-600 flex items-center justify-center shadow-md">
               <Wallet className="w-5 h-5 text-white" />
@@ -373,14 +834,14 @@ export function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
-                  Mis Finanzas y Vida Crediticia
+                  Mis Finanzas Personales
                 </h1>
                 <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700/50">
-                  <Smartphone className="w-3 h-3" /> Samsung A36 5G Ready
+                  <Smartphone className="w-3 h-3" /> Samsung A36 5G
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Control personal de compras, notificaciones, extractos PDF, cálculos y deudas
+                100% datos reales • Salario, pagos fijos, metas, notificaciones y vida crediticia
               </p>
             </div>
           </div>
@@ -390,49 +851,38 @@ export function App() {
               value={currency}
               onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
               aria-label="Moneda"
-              className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200 font-semibold"
+              className="bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 font-semibold"
             >
-              <option value="COP">🇨🇴 COP ($)</option>
-              <option value="USD">🇺🇸 USD ($)</option>
-              <option value="MXN">🇲🇽 MXN ($)</option>
-              <option value="EUR">🇪🇺 EUR (€)</option>
+              <option value="COP">🇨🇴 COP</option>
+              <option value="USD">🇺🇸 USD</option>
+              <option value="MXN">🇲🇽 MXN</option>
+              <option value="EUR">🇪🇺 EUR</option>
             </select>
 
             <button
               type="button"
               onClick={() => setShowPinSetup(!showPinSetup)}
-              className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs flex items-center gap-1"
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs flex items-center gap-1"
               title="Configurar PIN de privacidad"
             >
               {pinHash ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{pinHash ? 'PIN Activo' : 'PIN'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleResetOrLoadExample}
-              className="px-2.5 py-1.5 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/70 border border-indigo-700/50 text-indigo-300 text-xs font-semibold flex items-center gap-1"
-              title="Cargar datos de ejemplo"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Datos Ejemplo</span>
             </button>
 
             <button
               type="button"
               onClick={handleClearAll}
-              className="px-2.5 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900/70 border border-rose-800/60 text-rose-300 text-xs font-semibold"
+              className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-rose-950/80 border border-slate-800 hover:border-rose-800 text-slate-300 hover:text-rose-200 text-xs font-semibold transition"
+              title="Reiniciar todos los datos en cero"
             >
-              En Cero
+              Reiniciar
             </button>
           </div>
         </div>
 
-        {/* Configuración rápida de PIN local */}
         {showPinSetup && (
           <div className="max-w-5xl mx-auto mt-2 p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
             <span className="text-slate-300">
-              🔒 Protege la app en tu Samsung A36 5G con un PIN local de 4 dígitos:
+              🔒 Protege tu app con un PIN local de 4 dígitos:
             </span>
             <div className="flex items-center gap-2">
               <input
@@ -477,88 +927,86 @@ export function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-4 space-y-4">
-        {/* Tarjetas Principales de Resumen Financiero y Crediticio */}
-        <section className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              Balance Disponible
-            </span>
-            <div
-              className={`text-lg sm:text-xl font-extrabold mt-1 ${
-                metrics.balanceDisponible >= 0 ? 'text-white' : 'text-rose-400'
-              }`}
-            >
-              {formatCurrency(metrics.balanceDisponible, currency)}
-            </div>
-            <span className="text-[10px] text-slate-500 block mt-0.5">Flujo neto libre</span>
-          </div>
-
-          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-              <TrendingUp className="w-3 h-3 text-emerald-400" /> Ganancias / Ingresos
-            </span>
-            <div className="text-lg sm:text-xl font-extrabold text-emerald-400 mt-1">
-              {formatCurrency(metrics.totalGanancias, currency)}
-            </div>
-            <span className="text-[10px] text-slate-500 block mt-0.5">Abonos y nómina</span>
-          </div>
-
-          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-              <TrendingDown className="w-3 h-3 text-rose-400" /> Compras / Gastos
-            </span>
-            <div className="text-lg sm:text-xl font-extrabold text-rose-400 mt-1">
-              {formatCurrency(metrics.totalGastos, currency)}
-            </div>
-            <span className="text-[10px] text-slate-500 block mt-0.5">
-              Prom: {formatCurrency(metrics.promedioGastoDiario, currency)}/día
-            </span>
-          </div>
-
-          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-              <CreditCard className="w-3 h-3 text-amber-400" /> Deuda Total Activa
-            </span>
-            <div className="text-lg sm:text-xl font-extrabold text-amber-400 mt-1">
-              {formatCurrency(metrics.deudaTotalObligaciones, currency)}
-            </div>
-            <span className="text-[10px] text-slate-500 block mt-0.5">
-              Uso cupo: {metrics.porcentajeUtilizacionCupo.toFixed(0)}%
-            </span>
-          </div>
-
-          <div className="col-span-2 sm:col-span-1 bg-slate-900/90 border border-indigo-500/30 rounded-2xl p-3.5 flex sm:block items-center justify-between">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-300 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3 text-indigo-400" /> Score Crediticio
+        {/* Panel Principal de Estado Financiero Real */}
+        <section className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 border border-slate-800 rounded-2xl p-4 shadow-lg">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="col-span-2 sm:col-span-1 bg-slate-950/90 border border-indigo-500/30 rounded-xl p-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-300 block">
+                Disponible Real
               </span>
-              <div className="text-lg sm:text-xl font-extrabold text-indigo-400 mt-1">
-                {metrics.scoreEstimado} <span className="text-xs font-normal text-slate-400">pts</span>
+              <div
+                className={`text-xl font-extrabold mt-1 ${
+                  metrics.disponibleDespuesDePagosFijos >= 0 ? 'text-white' : 'text-rose-400'
+                }`}
+              >
+                {formatCurrency(metrics.disponibleDespuesDePagosFijos, currency)}
               </div>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                Libre tras pagos fijos
+              </span>
             </div>
-            <span className="text-[10px] text-slate-400 block mt-0.5">
-              Trading: {formatCurrency(metrics.totalTrading, currency)}
-            </span>
+
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                <TrendingUp className="w-3 h-3 text-emerald-400" /> Mi Salario / Ingresos
+              </span>
+              <div className="text-base sm:text-lg font-extrabold text-emerald-400 mt-1">
+                {formatCurrency(metrics.totalGanancias, currency)}
+              </div>
+              <span className="text-[10px] text-slate-500 block mt-0.5">
+                {salaryProfile.salarioMensualNeto > 0 ? 'Sueldo configurado' : 'Configúralo abajo'}
+              </span>
+            </div>
+
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                <TrendingDown className="w-3 h-3 text-rose-400" /> Compras y Gastos
+              </span>
+              <div className="text-base sm:text-lg font-extrabold text-rose-400 mt-1">
+                {formatCurrency(metrics.totalGastos, currency)}
+              </div>
+              <span className="text-[10px] text-slate-500 block mt-0.5">
+                Fijos pend: {formatCurrency(metrics.pagosFijosPendientes, currency)}
+              </span>
+            </div>
+
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                <CreditCard className="w-3 h-3 text-amber-400" /> Deudas Activas
+              </span>
+              <div className="text-base sm:text-lg font-extrabold text-amber-400 mt-1">
+                {formatCurrency(metrics.deudaTotalObligaciones, currency)}
+              </div>
+              <span className="text-[10px] text-slate-500 block mt-0.5">
+                Score: {metrics.scoreEstimado} pts
+              </span>
+            </div>
+
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                <Target className="w-3 h-3 text-indigo-400" /> Metas Ahorradas
+              </span>
+              <div className="text-base sm:text-lg font-extrabold text-indigo-300 mt-1">
+                {formatCurrency(metrics.totalMetasAhorrado, currency)}
+              </div>
+              <span className="text-[10px] text-slate-500 block mt-0.5">
+                Obj: {formatCurrency(metrics.totalMetasObjetivo, currency)}
+              </span>
+            </div>
           </div>
         </section>
 
-        {/* Navegación Principal de Módulos */}
-        <nav className="flex overflow-x-auto gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800">
-          {[
-            { id: 'movimientos', label: 'Movimientos y Registro', icon: Wallet },
-            { id: 'escaner', label: 'Escáner Notif / PDF / Fotos', icon: Sparkles },
-            { id: 'creditos', label: 'Vida Crediticia y Prioridades', icon: CreditCard },
-            { id: 'calculos', label: 'Cálculos, Promedios y Cuotas', icon: Calculator },
-            { id: 'asesor', label: 'Asesor, Ejemplos y Descarga A36', icon: Bot },
-          ].map((item) => {
+        {/* Barra de Navegación Superior (Escritorio / Tablet) */}
+        <nav className="hidden sm:flex overflow-x-auto gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800">
+          {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeSection === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveSection(item.id as MainSection)}
-                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
+                onClick={() => setActiveSection(item.id)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                   active
                     ? 'bg-indigo-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
@@ -571,42 +1019,52 @@ export function App() {
           })}
         </nav>
 
-        {/* SECCIÓN 1: MOVIMIENTOS Y REGISTRO RÁPIDO */}
-        {activeSection === 'movimientos' && (
+        {/* PESTAÑA 1: MI MES (SALARIO, COSAS QUE PAGO, METAS Y MOVIMIENTOS) */}
+        {activeSection === 'mimes' && (
           <div className="space-y-4">
-            {/* Acceso directo al escáner */}
-            <div className="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-emerald-950/60 border border-indigo-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-bold text-white flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-indigo-400" />
-                  ¿Tienes una notificación de Nequi/Bancolombia, un recibo en foto o un extracto en PDF?
-                </h2>
-                <p className="text-xs text-slate-300 mt-0.5">
-                  Analízalo automáticamente para extraer compras, pagos, tasas E.A., promedios y ejemplos de ahorro.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveSection('escaner')}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition shrink-0"
-              >
-                Abrir Escáner Inteligente →
-              </button>
-            </div>
+            {/* Centro de Salario, Pagos Fijos del Mes y Metas de Ahorro */}
+            <SalaryBillsGoalsCenter
+              currency={currency}
+              salaryProfile={salaryProfile}
+              onUpdateSalary={(profile) => {
+                setSalaryProfile(profile);
+                showToast(`✅ Salario mensual guardado: ${formatCurrency(profile.salarioMensualNeto, currency)}`);
+              }}
+              onDepositSalaryNow={handleDepositSalaryNow}
+              recurringPayments={recurringPayments}
+              onAddRecurringPayment={handleAddRecurringPayment}
+              onTogglePayRecurring={handleTogglePayRecurring}
+              onResetMonthlyPayments={handleResetMonthlyPayments}
+              onDeleteRecurringPayment={handleDeleteRecurringPayment}
+              goals={goals}
+              onAddGoal={handleAddGoal}
+              onContributeGoal={handleContributeGoal}
+              onDeleteGoal={handleDeleteGoal}
+            />
 
-            {/* Formulario de Registro Manual */}
+            {/* Registro Manual de Compras, Ingresos o Gastos Diarios */}
             <form
               onSubmit={handleManualSubmit}
               className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3"
             >
-              <h2 className="text-sm font-bold text-white flex items-center gap-1.5">
-                <Plus className="w-4 h-4 text-emerald-400" />
-                Registro Manual de Movimiento
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-emerald-400" />
+                  Registrar Compra, Gasto o Ingreso Rápido
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('escaner')}
+                  className="text-xs text-indigo-300 hover:text-indigo-200 font-semibold flex items-center gap-1"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  ¿Tienes notificación o recibo? Usar Escáner →
+                </button>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                 <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Tipo</label>
+                  <label className="text-[11px] text-slate-400 block mb-1">Tipo de Movimiento</label>
                   <select
                     value={manTipo}
                     onChange={(e) => {
@@ -617,8 +1075,8 @@ export function App() {
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                   >
                     <option value="gasto">🛒 Compra / Gasto</option>
-                    <option value="ganancia">💰 Ganancia / Ingreso</option>
-                    <option value="deuda">⏳ Deuda / Crédito</option>
+                    <option value="ganancia">💰 Ganancia / Ingreso Extra</option>
+                    <option value="deuda">⏳ Deuda / Cuota Pendiente</option>
                     <option value="trading">📈 Trading / Inversión</option>
                   </select>
                 </div>
@@ -645,7 +1103,7 @@ export function App() {
                     required
                     value={manMonto}
                     onChange={(e) => setManMonto(e.target.value)}
-                    placeholder="Ej: 50000"
+                    placeholder="Ej: 45000"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
                   />
                 </div>
@@ -656,7 +1114,7 @@ export function App() {
                     type="text"
                     value={manEntidad}
                     onChange={(e) => setManEntidad(e.target.value)}
-                    placeholder="Nequi, Bancolombia, Nu..."
+                    placeholder="Nequi, Bancolombia, Efectivo..."
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                   />
                 </div>
@@ -668,7 +1126,7 @@ export function App() {
                   required
                   value={manDesc}
                   onChange={(e) => setManDesc(e.target.value)}
-                  placeholder="Descripción (ej. Supermercado Éxito, Pago factura luz, Venta producto)"
+                  placeholder="Descripción (ej. Mercado D1, Almuerzo, Pago servicio, Uber)"
                   className="flex-1 min-w-[220px] bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                 />
 
@@ -680,7 +1138,7 @@ export function App() {
                       onChange={(e) => setManEsEsencial(e.target.checked)}
                       className="accent-indigo-500"
                     />
-                    Gasto esencial (Necesidad)
+                    Esencial (Necesidad)
                   </label>
                 )}
 
@@ -693,16 +1151,16 @@ export function App() {
               </div>
             </form>
 
-            {/* Listado y Filtro de Movimientos */}
+            {/* Historial de Movimientos Registrados */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
                 <div className="flex overflow-x-auto gap-1">
                   {[
-                    { id: 'todos', label: 'Todos' },
+                    { id: 'todos', label: `Todos (${transactions.length})` },
                     { id: 'gasto', label: '🛒 Compras' },
-                    { id: 'ganancia', label: '💰 Ganancias' },
+                    { id: 'ganancia', label: '💰 Ingresos' },
                     { id: 'deuda', label: '⏳ Deudas' },
-                    { id: 'trading', label: '📈 Trading' },
+                    { id: 'trading', label: '📈 Inversiones' },
                   ].map((t) => (
                     <button
                       key={t.id}
@@ -725,16 +1183,18 @@ export function App() {
                     type="text"
                     value={busqueda}
                     onChange={(e) => setBusqueda(e.target.value)}
-                    placeholder="Buscar comercio, banco o categoría..."
+                    placeholder="Buscar movimiento..."
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white"
                   />
                 </div>
               </div>
 
               {filteredTransactions.length === 0 ? (
-                <p className="text-center text-xs text-slate-500 py-8">
-                  No hay movimientos en esta vista. Usa el formulario o el Escáner Inteligente para registrar.
-                </p>
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-xs text-slate-400">
+                    Tu historial está limpio (sin datos falsos). Registra arriba tu salario, tus pagos del mes o pega una notificación bancaria en la pestaña <strong>Escáner</strong>.
+                  </p>
+                </div>
               ) : (
                 <div className="divide-y divide-slate-800/80">
                   {filteredTransactions.map((m) => (
@@ -804,35 +1264,25 @@ export function App() {
           </div>
         )}
 
-        {/* SECCIÓN 2: ESCÁNER MULTIMODAL (NOTIFICACIONES, IMÁGENES, PDF, CORREOS) */}
+        {/* PESTAÑA 2: ESCÁNER MULTIMODAL Y LECTOR DE NOTIFICACIONES EN VIVO */}
         {activeSection === 'escaner' && (
           <ScannerCenter
             currency={currency}
-            onAddTransactions={(items) => {
-              handleAddMultipleTransactions(items);
-            }}
+            onAddTransactions={handleAddMultipleTransactions}
             onAddOrUpdateCredit={handleAddOrUpdateCredit}
+            autoCapturedNotifs={autoCapturedNotifs}
+            onDismissCapturedNotif={(id) =>
+              setAutoCapturedNotifs((prev) => prev.filter((n) => n.id !== id))
+            }
+            onSimulateIncomingNotif={(app, text) => processIncomingNotification(app, text)}
+            processedHistory={processedNotificationsHistory}
+            onRecordProcessedNotification={handleRecordProcessedNotification}
+            onDeleteProcessedRecord={handleDeleteProcessedRecord}
+            onClearProcessedHistory={handleClearProcessedHistory}
           />
         )}
 
-        {/* SECCIÓN 3: VIDA CREDITICIA, TARJETAS Y PRIORIZADOR DE DEUDAS */}
-        {activeSection === 'creditos' && (
-          <CreditLifeCenter
-            currency={currency}
-            credits={credits}
-            scoreEstimado={metrics.scoreEstimado}
-            porcentajeUtilizacionCupo={metrics.porcentajeUtilizacionCupo}
-            cupoTotalTarjetas={metrics.cupoTotalTarjetas}
-            saldoTotalTarjetas={metrics.saldoTotalTarjetas}
-            indiceEndeudamientoMensual={metrics.indiceEndeudamientoMensual}
-            interesesMensualesEstimados={metrics.interesesMensualesEstimados}
-            onAddCredit={handleAddOrUpdateCredit}
-            onPayCreditAmount={handlePayCreditAmount}
-            onDeleteCredit={handleDeleteCredit}
-          />
-        )}
-
-        {/* SECCIÓN 4: CÁLCULOS, PROMEDIOS, REGLA 50/30/20 Y SIMULADOR DE CUOTAS */}
+        {/* PESTAÑA 3: CÁLCULOS, GRÁFICO DE ANILLOS RECHARTS, PROMEDIOS Y SIMULADOR */}
         {activeSection === 'calculos' && (
           <CalculatorsCenter
             currency={currency}
@@ -849,13 +1299,31 @@ export function App() {
           />
         )}
 
-        {/* SECCIÓN 5: ASESOR, EJEMPLOS Y CENTRO NATIVO SAMSUNG GALAXY A36 5G */}
+        {/* PESTAÑA 4: DEUDAS, TARJETAS Y VIDA CREDITICIA */}
+        {activeSection === 'creditos' && (
+          <CreditLifeCenter
+            currency={currency}
+            credits={credits}
+            scoreEstimado={metrics.scoreEstimado}
+            porcentajeUtilizacionCupo={metrics.porcentajeUtilizacionCupo}
+            cupoTotalTarjetas={metrics.cupoTotalTarjetas}
+            saldoTotalTarjetas={metrics.saldoTotalTarjetas}
+            indiceEndeudamientoMensual={metrics.indiceEndeudamientoMensual}
+            interesesMensualesEstimados={metrics.interesesMensualesEstimados}
+            onAddCredit={handleAddOrUpdateCredit}
+            onPayCreditAmount={handlePayCreditAmount}
+            onDeleteCredit={handleDeleteCredit}
+          />
+        )}
+
+        {/* PESTAÑA 5: ASESOR IA CONVERSACIONAL Y DESCARGA SAMSUNG A36 5G */}
         {activeSection === 'asesor' && (
           <AdvisorAndMobileCenter
             currency={currency}
             transactions={transactions}
             credits={credits}
             financialSnapshot={metrics}
+            onExecuteAdvisorActions={handleExecuteAdvisorActions}
             onImportBackup={({ transactions: tx, credits: cr }) => {
               setTransactions(tx);
               setCredits(cr);
@@ -865,6 +1333,27 @@ export function App() {
           />
         )}
       </main>
+
+      {/* Barra de Navegación Inferior Fija para uso cómodo en el Samsung Galaxy A36 5G */}
+      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 px-2 py-1.5 flex items-center justify-around">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const active = activeSection === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveSection(item.id)}
+              className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl text-[10px] font-bold transition ${
+                active ? 'text-indigo-400 bg-indigo-950/50' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Icon className="w-4 h-4 mb-0.5" />
+              <span>{item.shortLabel}</span>
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }

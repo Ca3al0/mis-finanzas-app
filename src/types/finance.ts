@@ -13,36 +13,79 @@ export type TransactionCategory =
   | 'Ventas / Negocio / Freelance'
   | 'Rendimientos / Trading'
   | 'Cuota Tarjeta / Crédito'
+  | 'Ahorro para Meta'
   | 'Otros';
 
-export type SourceType = 'manual' | 'notificacion' | 'imagen' | 'pdf' | 'correo';
+export type SourceType = 'manual' | 'notificacion' | 'imagen' | 'pdf' | 'correo' | 'automatico';
+
+export interface ProcessedNotificationRecord {
+  id: string;
+  timestamp: number;
+  fechaStr: string;
+  fuente: SourceType;
+  entidad: string;
+  textoOriginal: string;
+  resumen: string;
+  montoTotal: number;
+  tipoPrincipal: TransactionType;
+  categoriaPrincipal: TransactionCategory;
+  itemsCount: number;
+}
+
+export interface SalaryProfile {
+  salarioMensualNeto: number;
+  otrosIngresosFijos: number;
+  frecuenciaPago: 'mensual' | 'quincenal' | 'semanal';
+  diaPago1: number;
+  diaPago2?: number;
+  metaAhorroPorcentaje: number; // ej. 20%
+}
+
+export interface RecurringPayment {
+  id: string;
+  nombre: string; // Ej: Arriendo, Internet Hogar, Luz, Gimnasio
+  monto: number;
+  diaVencimiento: number; // 1 - 31
+  categoria: TransactionCategory;
+  pagadoEsteMes: boolean;
+  ultimoPagoFecha?: string;
+}
+
+export interface FinancialGoal {
+  id: string;
+  nombre: string; // Ej: Fondo de Emergencia, Comprar Moto, Viaje
+  montoObjetivo: number;
+  montoAhorrado: number;
+  plazoMeses: number;
+  prioridad: 'alta' | 'media' | 'baja';
+}
 
 export interface Transaction {
   id: string;
-  fecha: string; // ISO date or display date
+  fecha: string;
   timestamp: number;
   tipo: TransactionType;
   categoria: TransactionCategory;
   monto: number;
   desc: string;
-  entidad?: string; // Ej: Nequi, Bancolombia, Nu, Daviplata, BBVA
+  entidad?: string;
   cuotas?: number;
   tasaEA?: number;
   fuente: SourceType;
-  esEsencial?: boolean; // Para regla 50/30/20 (Necesidad vs Deseo)
+  esEsencial?: boolean;
 }
 
 export interface CreditObligation {
   id: string;
-  nombre: string; // Ej: Tarjeta Nu, Mastercard Bancolombia, Crédito Vehículo
+  nombre: string;
   entidad: string;
   tipo: 'tarjeta_credito' | 'prestamo_personal' | 'credito_vehiculo' | 'hipotecario' | 'compra_cartera';
-  cupoTotal: number; // 0 si es préstamo fijo, >0 si es tarjeta rotativa
+  cupoTotal: number;
   saldoActual: number;
-  tasaEA: number; // Efectiva Anual % (ej. 28.5)
+  tasaEA: number;
   cuotaMinima: number;
-  diaCorte: number; // 1 - 31
-  diaPago: number; // 1 - 31
+  diaCorte: number;
+  diaPago: number;
   enMora: boolean;
   notas?: string;
 }
@@ -123,4 +166,18 @@ export interface PayoffComparison {
     mesesTotales: number;
     interesesTotales: number;
   };
+}
+
+export interface AdvisorActionCommand {
+  tipoAccion: 'actualizar_salario' | 'agregar_pago_fijo' | 'agregar_meta' | 'registrar_movimiento' | 'agregar_deuda';
+  datos: Record<string, any>;
+  descripcionConfirmacion: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  actionsExecuted?: string[];
 }

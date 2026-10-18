@@ -1,8 +1,13 @@
-import { Transaction, CreditObligation, TransactionType, TransactionCategory, SourceType } from '../types/finance';
+import {
+  Transaction,
+  CreditObligation,
+  TransactionType,
+  TransactionCategory,
+  SourceType,
+} from '../types/finance';
 
 /**
  * Escapa caracteres HTML peligrosos para prevenir ataques XSS (Cross-Site Scripting)
- * al exportar reportes o renderizar textos provenientes de notificaciones/correos externos.
  */
 export function escapeHtml(unsafe: string): string {
   return String(unsafe || '')
@@ -35,18 +40,25 @@ export function safePositiveNumber(val: unknown, fallback = 0, max = 99999999999
 }
 
 const VALID_TYPES: TransactionType[] = ['gasto', 'ganancia', 'deuda', 'trading', 'pago_credito'];
-const VALID_SOURCES: SourceType[] = ['manual', 'notificacion', 'imagen', 'pdf', 'correo'];
+const VALID_SOURCES: SourceType[] = ['manual', 'notificacion', 'imagen', 'pdf', 'correo', 'automatico'];
+
+// IDs de demostración antiguos que se deben filtrar para no mostrar datos falsos estáticos
+const LEGACY_DEMO_TX_IDS = new Set(['tx-1', 'tx-2', 'tx-3', 'tx-4', 'tx-5', 'tx-6', 'tx-7']);
+const LEGACY_DEMO_CRED_IDS = new Set(['cred-1', 'cred-2', 'cred-3']);
 
 /**
- * Valida y repara cualquier registro de movimiento corrupto en localStorage o archivo JSON importado
+ * Valida y repara cualquier registro de movimiento en localStorage o archivo JSON importado
  */
-export function validateTransactionsArray(raw: unknown): Transaction[] {
+export function validateTransactionsArray(raw: unknown, filterLegacyDemo = false): Transaction[] {
   if (!Array.isArray(raw)) return [];
   const valid: Transaction[] = [];
 
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
+    const idStr = typeof obj.id === 'string' && obj.id.trim() ? obj.id.slice(0, 64) : '';
+    if (filterLegacyDemo && LEGACY_DEMO_TX_IDS.has(idStr)) continue;
+
     const monto = safePositiveNumber(obj.monto, 0);
     if (monto <= 0) continue;
 
@@ -59,7 +71,7 @@ export function validateTransactionsArray(raw: unknown): Transaction[] {
       : 'manual';
 
     valid.push({
-      id: typeof obj.id === 'string' && obj.id.trim() ? obj.id.slice(0, 64) : `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: idStr || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       fecha: sanitizeTextInput(String(obj.fecha || 'Hoy'), 40),
       timestamp: safePositiveNumber(obj.timestamp, Date.now()),
       tipo,
@@ -80,18 +92,21 @@ export function validateTransactionsArray(raw: unknown): Transaction[] {
 /**
  * Valida y repara obligaciones crediticias evitando divisiones por cero o tasas inválidas
  */
-export function validateCreditsArray(raw: unknown): CreditObligation[] {
+export function validateCreditsArray(raw: unknown, filterLegacyDemo = false): CreditObligation[] {
   if (!Array.isArray(raw)) return [];
   const valid: CreditObligation[] = [];
 
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
+    const idStr = typeof obj.id === 'string' && obj.id.trim() ? obj.id.slice(0, 64) : '';
+    if (filterLegacyDemo && LEGACY_DEMO_CRED_IDS.has(idStr)) continue;
+
     const nombre = sanitizeTextInput(String(obj.nombre || ''), 80);
     if (!nombre) continue;
 
     valid.push({
-      id: typeof obj.id === 'string' && obj.id.trim() ? obj.id.slice(0, 64) : `cred-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: idStr || `cred-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       nombre,
       entidad: sanitizeTextInput(String(obj.entidad || 'Banco'), 50),
       tipo: ['tarjeta_credito', 'prestamo_personal', 'credito_vehiculo', 'hipotecario', 'compra_cartera'].includes(String(obj.tipo))

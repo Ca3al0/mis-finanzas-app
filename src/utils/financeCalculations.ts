@@ -4,6 +4,9 @@ import {
   PayoffComparison,
   DebtPayoffStep,
   TransactionCategory,
+  SalaryProfile,
+  RecurringPayment,
+  FinancialGoal,
 } from '../types/finance';
 
 export type CurrencyCode = 'COP' | 'USD' | 'MXN' | 'EUR';
@@ -19,13 +22,9 @@ export function formatCurrency(amount: number, currency: CurrencyCode = 'COP'): 
     style: 'currency',
     currency,
     maximumFractionDigits: currency === 'COP' ? 0 : 2,
-  }).format(Math.round(amount));
+  }).format(Math.round(amount || 0));
 }
 
-/**
- * Convierte Tasa Efectiva Anual (E.A. %) a Tasa Mensual Vencida (M.V. %)
- * Fórmula financiera exacta: MV = (1 + EA)^(1/12) - 1
- */
 export function eaToMvPercent(eaPercent: number): number {
   if (eaPercent <= 0) return 0;
   const eaDecimal = eaPercent / 100;
@@ -33,10 +32,6 @@ export function eaToMvPercent(eaPercent: number): number {
   return mvDecimal * 100;
 }
 
-/**
- * Convierte Tasa Mensual Vencida (M.V. %) a Tasa Efectiva Anual (E.A. %)
- * Fórmula financiera exacta: EA = (1 + MV)^12 - 1
- */
 export function mvToEaPercent(mvPercent: number): number {
   if (mvPercent <= 0) return 0;
   const mvDecimal = mvPercent / 100;
@@ -44,10 +39,6 @@ export function mvToEaPercent(mvPercent: number): number {
   return eaDecimal * 100;
 }
 
-/**
- * Simulador de compra con tarjeta de crédito diferida a N cuotas
- * Nota:En Colombia y LatAm, compras a 1 cuota suelen tener 0% de interés corriente si se pagan a tiempo.
- */
 export function simulateInstallmentPurchase(
   montoCompra: number,
   cuotas: number,
@@ -79,9 +70,6 @@ export function simulateInstallmentPurchase(
 
   const mvPercent = eaToMvPercent(tasaEA);
   const r = mvPercent / 100;
-
-  // Cuota fija francesa (o amortización constante en TC):
-  // Usamos cuota fija estándar financiera: P * [r(1+r)^n] / [(1+r)^n - 1]
   const factor = Math.pow(1 + r, cuotas);
   const cuotaBase = r > 0 ? (montoCompra * (r * factor)) / (factor - 1) : montoCompra / cuotas;
 
@@ -122,15 +110,15 @@ export function simulateInstallmentPurchase(
   };
 }
 
-/**
- * Calcula métricas completas de finanzas personales, promedios, regla 50/30/20 y salud crediticia
- */
 export function calculateFinancialMetrics(
   transactions: Transaction[],
-  credits: CreditObligation[]
+  credits: CreditObligation[],
+  salaryProfile?: SalaryProfile,
+  recurringPayments: RecurringPayment[] = [],
+  goals: FinancialGoal[] = []
 ) {
-  let totalGanancias = 0;
-  let totalGastos = 0;
+  let ingresosMovimientos = 0;
+  let totalGastosVariables = 0;
   let totalDeudasMovs = 0;
   let totalTrading = 0;
   let gastosEsenciales = 0;
@@ -141,9 +129,9 @@ export function calculateFinancialMetrics(
 
   transactions.forEach((t) => {
     if (t.tipo === 'ganancia') {
-      totalGanancias += t.monto;
+      ingresosMovimientos += t.monto;
     } else if (t.tipo === 'gasto' || t.tipo === 'pago_credito') {
-      totalGastos += t.monto;
+      totalGastosVariables += t.monto;
       if (t.esEsencial) {
         gastosEsenciales += t.monto;
       } else {
@@ -151,7 +139,7 @@ export function calculateFinancialMetrics(
       }
       if (
         t.categoria === 'Gastos Hormiga / Café / Snacks' ||
-        (t.monto <= 45000 && !t.esEsencial)
+        (t.monto <= 35000 && !t.esEsencial)
       ) {
         gastosHormiga += t.monto;
       }
@@ -168,7 +156,22 @@ export function calculateFinancialMetrics(
     }
   });
 
+  // Pagos fijos pendientes por pagar este mes (los ya pagados ya generaron su movimiento en transactions)
+  const pagosFijosPendientes = recurringPayments
+    .filter((p) => !p.pagadoEsteMes)
+    .reduce((acc, p) => acc + p.monto, 0);
+
+  const totalPagosFijosMensuales = recurringPayments.reduce((acc, p) => acc + p.monto, 0);
+
+  // El ingreso total del mes toma el salario fijo configurado + ingresos extra (o la suma de ingresos registrados si es mayor)
+  const salarioConfigurado =
+    (salaryProfile?.salarioMensualNeto || 0) + (salaryProfile?.otrosIngresosFijos || 0);
+  const totalGanancias = Math.max(salarioConfigurado, ingresosMovimientos);
+
+  const totalGastos = totalGastosVariables;
   const balanceDisponible = totalGanancias - totalGastos - totalTrading;
+  const disponibleDespuesDePagosFijos = Math.max(0, balanceDisponible - pagosFijosPendientes);
+
   const numGastos = transactions.filter((t) => t.tipo === 'gasto' || t.tipo === 'pago_credito').length;
   const promedioPorCompra = numGastos > 0 ? totalGastos / numGastos : 0;
   const promedioGastoDiario = totalGastos / 30;
@@ -185,34 +188,35 @@ export function calculateFinancialMetrics(
   const cuotaMinimaTotalMensual = credits.reduce((acc, c) => acc + c.cuotaMinima, 0);
 
   const ingresoBase = Math.max(totalGanancias, 1);
-  const indiceEndeudamientoMensual = (cuotaMinimaTotalMensual / ingresoBase) * 100;
+  const indiceEndeudamientoMensual =
+    totalGanancias > 0 ? (cuotaMinimaTotalMensual / ingresoBase) * 100 : 0;
 
-  // Tasa promedio ponderada E.A. de todas las deudas
   const sumaPonderadaTasas = credits.reduce((acc, c) => acc + c.saldoActual * c.tasaEA, 0);
   const saldoTotalCreditos = credits.reduce((acc, c) => acc + c.saldoActual, 0);
   const tasaPromedioPonderadaEA =
     saldoTotalCreditos > 0 ? sumaPonderadaTasas / saldoTotalCreditos : 0;
 
-  // Intereses mensuales que se van "a la basura" solo por mantener el saldo actual
   const interesesMensualesEstimados = credits.reduce((acc, c) => {
     const mv = eaToMvPercent(c.tasaEA) / 100;
     return acc + c.saldoActual * mv;
   }, 0);
 
-  // Cálculo de Score Crediticio Estimado (Escala 150 - 950 estilo DataCrédito Experian)
-  let scoreEstimado = 820;
-  if (porcentajeUtilizacionCupo > 70) scoreEstimado -= 160;
-  else if (porcentajeUtilizacionCupo > 50) scoreEstimado -= 95;
-  else if (porcentajeUtilizacionCupo > 30) scoreEstimado -= 40;
-  else if (porcentajeUtilizacionCupo > 0 && porcentajeUtilizacionCupo <= 25) scoreEstimado += 35;
+  let scoreEstimado = 800;
+  if (credits.length > 0) {
+    if (porcentajeUtilizacionCupo > 70) scoreEstimado -= 160;
+    else if (porcentajeUtilizacionCupo > 50) scoreEstimado -= 95;
+    else if (porcentajeUtilizacionCupo > 30) scoreEstimado -= 40;
+    else if (porcentajeUtilizacionCupo > 0 && porcentajeUtilizacionCupo <= 25) scoreEstimado += 45;
 
-  if (indiceEndeudamientoMensual > 50) scoreEstimado -= 120;
-  else if (indiceEndeudamientoMensual > 35) scoreEstimado -= 55;
+    if (indiceEndeudamientoMensual > 50) scoreEstimado -= 120;
+    else if (indiceEndeudamientoMensual > 35) scoreEstimado -= 55;
 
-  const tieneMora = credits.some((c) => c.enMora);
-  if (tieneMora) scoreEstimado -= 220;
-
+    if (credits.some((c) => c.enMora)) scoreEstimado -= 220;
+  }
   scoreEstimado = Math.max(150, Math.min(950, Math.round(scoreEstimado)));
+
+  const totalMetasObjetivo = goals.reduce((acc, g) => acc + g.montoObjetivo, 0);
+  const totalMetasAhorrado = goals.reduce((acc, g) => acc + g.montoAhorrado, 0);
 
   const categoriasOrdenadas = Object.entries(gastosPorCategoria)
     .map(([categoria, data]) => ({
@@ -225,12 +229,18 @@ export function calculateFinancialMetrics(
     .sort((a, b) => b.total - a.total);
 
   return {
+    salarioMensualNeto: salaryProfile?.salarioMensualNeto || 0,
+    otrosIngresosFijos: salaryProfile?.otrosIngresosFijos || 0,
+    ingresosMovimientos,
     totalGanancias,
     totalGastos,
+    totalPagosFijosMensuales,
+    pagosFijosPendientes,
+    disponibleDespuesDePagosFijos,
     totalDeudasMovs,
     totalTrading,
     balanceDisponible,
-    gastosEsenciales,
+    gastosEsenciales: gastosEsenciales + pagosFijosPendientes,
     gastosDeseos,
     gastosHormiga,
     promedioPorCompra,
@@ -245,16 +255,12 @@ export function calculateFinancialMetrics(
     tasaPromedioPonderadaEA,
     interesesMensualesEstimados,
     scoreEstimado,
+    totalMetasObjetivo,
+    totalMetasAhorrado,
     categoriasOrdenadas,
   };
 }
 
-/**
- * Simula la liquidación de múltiples deudas comparando:
- * 1) Método Avalancha (Mayor Tasa E.A. primero)
- * 2) Método Bola de Nieve (Menor Saldo primero)
- * 3) Solo Pagos Mínimos
- */
 export function compareDebtStrategies(
   credits: CreditObligation[],
   abonoExtraMensual: number
@@ -269,7 +275,7 @@ export function compareDebtStrategies(
         interesesTotales: 0,
         ahorroInteresesVsMinimo: 0,
         mesesAhorradosVsMinimo: 0,
-        explicacion: 'No tienes deudas activas registradas.',
+        explicacion: 'Registra tus tarjetas o préstamos abajo para calcular el orden exacto de pago.',
       },
       bolaDeNieve: {
         pasos: [],
@@ -277,7 +283,7 @@ export function compareDebtStrategies(
         interesesTotales: 0,
         ahorroInteresesVsMinimo: 0,
         mesesAhorradosVsMinimo: 0,
-        explicacion: 'No tienes deudas activas registradas.',
+        explicacion: 'Registra tus tarjetas o préstamos abajo para calcular el orden exacto de pago.',
       },
       soloPagosMinimos: {
         mesesTotales: 0,
@@ -298,16 +304,14 @@ export function compareDebtStrategies(
 
     let month = 0;
     let totalInterest = 0;
-    const maxMonths = 180; // Tope 15 años
+    const maxMonths = 180;
 
     while (items.some((i) => i.remaining > 1) && month < maxMonths) {
       month++;
       let availableExtra = extraMonthly;
 
-      // 1. Generar intereses del mes y pagar cuota mínima en todas
       for (const item of items) {
         if (item.remaining <= 1) {
-          // Efecto bola de nieve/avalancha: la cuota mínima de una deuda ya liquidada se suma al abono extra
           availableExtra += item.minPayment;
           continue;
         }
@@ -326,7 +330,6 @@ export function compareDebtStrategies(
         }
       }
 
-      // 2. Aplicar todo el abono extra + cuotas liberadas a la deuda prioritaria #1 viva
       for (const item of items) {
         if (item.remaining > 1 && availableExtra > 0) {
           const extraApplied = Math.min(item.remaining, availableExtra);
@@ -354,11 +357,11 @@ export function compareDebtStrategies(
       razonPrioridad:
         strategyName === 'avalancha'
           ? idx === 0
-            ? `Prioridad #1 por tener la tasa más costosa (${item.tasaEA.toFixed(1)}% E.A.). Destina aquí todo tu abono extra.`
-            : `Paga el mínimo ($${Math.round(item.cuotaMinima).toLocaleString('es-CO')}) hasta liquidar la deuda #${idx}.`
+            ? `Págala de #1 por tener la tasa más alta (${item.tasaEA.toFixed(1)}% E.A.). Aquí va tu abono extra.`
+            : `Paga la cuota mínima ($${Math.round(item.cuotaMinima).toLocaleString('es-CO')}) mientras terminas la deuda #${idx}.`
           : idx === 0
-          ? `Prioridad #1 por tener el saldo más bajo ($${Math.round(item.saldoActual).toLocaleString('es-CO')}). La eliminarás rápido para liberar cuota.`
-          : `Paga el mínimo mientras liberas el flujo de caja de la deuda #${idx}.`,
+          ? `Págala de #1 por tener el saldo más pequeño ($${Math.round(item.saldoActual).toLocaleString('es-CO')}).`
+          : `Paga el mínimo hasta liberar la cuota de la deuda #${idx}.`,
     }));
 
     return {
@@ -368,18 +371,15 @@ export function compareDebtStrategies(
     };
   }
 
-  // Simulación base solo pagando mínimos (sin efecto cascada de abono extra)
   const baseMin = runSimulation(
     [...activeCredits].sort((a, b) => b.tasaEA - a.tasaEA),
     0,
     'avalancha'
   );
 
-  // Simulación Avalancha (Mayor tasa E.A. primero)
   const avalanchaSorted = [...activeCredits].sort((a, b) => b.tasaEA - a.tasaEA);
   const simAvalancha = runSimulation(avalanchaSorted, abonoExtraMensual, 'avalancha');
 
-  // Simulación Bola de Nieve (Menor saldo actual primero)
   const nieveSorted = [...activeCredits].sort((a, b) => a.saldoActual - b.saldoActual);
   const simNieve = runSimulation(nieveSorted, abonoExtraMensual, 'nieve');
 
@@ -389,14 +389,14 @@ export function compareDebtStrategies(
       ahorroInteresesVsMinimo: Math.max(0, baseMin.interesesTotales - simAvalancha.interesesTotales),
       mesesAhorradosVsMinimo: Math.max(0, baseMin.mesesTotales - simAvalancha.mesesTotales),
       explicacion:
-        'Ataca primero la obligación con la tasa Efectiva Anual (E.A.) más alta. Es el camino que matemáticamente te hace pagar menos intereses al banco.',
+        'Ataca primero la deuda con mayor tasa de interés (% E.A.). Es la ruta que más dinero te ahorra.',
     },
     bolaDeNieve: {
       ...simNieve,
       ahorroInteresesVsMinimo: Math.max(0, baseMin.interesesTotales - simNieve.interesesTotales),
       mesesAhorradosVsMinimo: Math.max(0, baseMin.mesesTotales - simNieve.mesesTotales),
       explicacion:
-        'Ataca primero la deuda más pequeña sin importar la tasa. Al cerrarla rápido, sumas su cuota mínima a la siguiente deuda ganando impulso psicológico y liquidez.',
+        'Ataca primero la deuda más pequeña para eliminar obligaciones rápido y liberar flujo de caja.',
     },
     soloPagosMinimos: {
       mesesTotales: baseMin.mesesTotales,
