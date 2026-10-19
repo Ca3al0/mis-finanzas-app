@@ -70,9 +70,25 @@ export async function inspectImageLocally(file: File): Promise<{ width: number; 
 /**
  * Convierte expresiones como "3 millones", "500 mil", "50k", "$1.450.000" o "45000" a número real
  */
+/**
+ * Convierte expresiones como "3 millones", "500 mil", "50k", "$1.450.000", "COP 35.000,00" o "45000" a número real,
+ * ignorando fechas (19/10/2026), horas (08:30), últimos dígitos de tarjetas (*4582), celulares (3001234567) y referencias.
+ */
 export function parseAllNumbersFromText(text: string): number[] {
   const results: number[] = [];
-  let workingText = text.toLowerCase();
+  let workingText = text
+    .toLowerCase()
+    // Eliminar fechas (ej: 19/10/2026, 2026-10-19, 19-10-26)
+    .replace(/\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b/g, ' ')
+    // Eliminar horas (ej: 08:30, 14:20:10)
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ')
+    // Eliminar últimos 4 dígitos de tarjetas (ej: *4582, **1234, t.deb *4582, tarjeta 4582)
+    .replace(/\*+\s*\d{3,6}\b/g, ' ')
+    .replace(/\b(?:t\.?\s*(?:deb|cred)\S*|tarjeta|cta|cuenta)\s*\*?\d{3,6}\b/g, ' ')
+    // Eliminar códigos de referencia, aprobación o autorización
+    .replace(/\b(?:ref|referencia|cod|codigo|código|aut|aprob|aprobacion|nro|num|comprobante)[.:#\s-]*\d{3,15}\b/g, ' ')
+    // Eliminar números de celular de 10 dígitos que empiezan por 3 (sin signo $)
+    .replace(/(?<![$\w])3\d{9}\b/g, ' ');
 
   // 1. Expresiones tipo "3.5 millones", "1 millon", "2 millones y medio"
   const millonesmedioRegex = /(\d+)\s*mill[oó]n(?:es)?\s*y\s*medio/gi;
@@ -97,12 +113,15 @@ export function parseAllNumbersFromText(text: string): number[] {
     return ' ';
   });
 
-  // 3. Cifras con signo peso o separadores de miles ($148.900, 1.250.000, $50,000, 45000)
-  const moneyRegex = /(?:\$|cop\s*)\s*(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d{3,10})|\b(\d{1,3}(?:[.,]\d{3}){1,3})\b|\b(\d{4,10})\b/gi;
+  // 3. Cifras con signo peso / COP o separadores de miles ($148.900, COP 35.000,00, 1.250.000, $50,000, 45000)
+  const moneyRegex =
+    /(?:\$|cop\s*\$?\s*)\s*(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d{3,10}(?:[.,]\d{1,2})?)|\b(\d{1,3}(?:[.,]\d{3}){1,3}(?:[.,]\d{1,2})?)\b|\b(\d{4,9})\b/gi;
   let m;
   while ((m = moneyRegex.exec(workingText)) !== null) {
     const rawNum = m[1] || m[2] || m[3] || '';
-    const normalized = rawNum.replace(/[.,]\d{2}$/, '').replace(/[.,]/g, '');
+    // Si termina en ,00 o .00 (centavos), quitar los centavos primero
+    const withoutCents = rawNum.replace(/[.,]\d{2}$/, '');
+    const normalized = withoutCents.replace(/[.,]/g, '');
     const parsed = parseInt(normalized, 10);
     if (!isNaN(parsed) && parsed >= 500 && !(parsed >= 2020 && parsed <= 2035 && !m[0].includes('$'))) {
       results.push(parsed);
@@ -126,6 +145,12 @@ export function detectBankOrEntity(text: string, fileName = ''): string {
   if (low.includes('falabella')) return 'Banco Falabella';
   if (low.includes('bogota') || low.includes('bogotá')) return 'Banco de Bogotá';
   if (low.includes('colpatria') || low.includes('scotiabank')) return 'Scotiabank Colpatria';
+  if (low.includes('av villas') || low.includes('avvillas')) return 'Banco AV Villas';
+  if (low.includes('occidente')) return 'Banco de Occidente';
+  if (low.includes('caja social')) return 'Banco Caja Social';
+  if (low.includes('popular')) return 'Banco Popular';
+  if (low.includes('rappi')) return 'RappiPay';
+  if (low.includes('mercadopago') || low.includes('mercado pago')) return 'Mercado Pago';
   if (low.includes('efectivo')) return 'Efectivo';
   return 'Cuenta / Banco';
 }
@@ -144,22 +169,22 @@ export function categorizeText(text: string, tipo: ExtractedTransactionItem['tip
   if (low.includes('arriendo') || low.includes('administracion') || low.includes('energia') || low.includes('energía') || low.includes('enel') || low.includes('epm') || low.includes('agua') || low.includes('acueducto') || low.includes('gas') || low.includes('internet') || low.includes('claro') || low.includes('movistar') || low.includes('tigo') || low.includes('wom') || low.includes('servicios') || low.includes('factura') || low.includes('luz')) {
     return { categoria: 'Vivienda y Servicios', esEsencial: true };
   }
-  if (low.includes('supermercado') || low.includes('mercado') || low.includes('exito') || low.includes('éxito') || low.includes('carulla') || low.includes('d1') || low.includes('ara') || low.includes('olimpica') || low.includes('fruver') || low.includes('tienda') || low.includes('panaderia') || low.includes('panadería')) {
+  if (low.includes('supermercado') || low.includes('mercado') || low.includes('exito') || low.includes('éxito') || low.includes('carulla') || low.includes('d1') || low.includes('ara') || low.includes('olimpica') || low.includes('fruver') || low.includes('tienda') || low.includes('panaderia') || low.includes('panadería') || low.includes('alkosto') || low.includes('makro') || low.includes('surtimax') || low.includes('justo') || low.includes('corral') || low.includes('carniceria')) {
     return { categoria: 'Alimentación y Supermercado', esEsencial: true };
   }
-  if (low.includes('uber') || low.includes('didi') || low.includes('cabify') || low.includes('indriver') || low.includes('picap') || low.includes('gasolina') || low.includes('transmilenio') || low.includes('metro') || low.includes('peaje') || low.includes('bus') || low.includes('taxi') || low.includes('pasaje') || low.includes('parqueadero')) {
+  if (low.includes('uber') || low.includes('didi') || low.includes('cabify') || low.includes('indriver') || low.includes('picap') || low.includes('gasolina') || low.includes('terpel') || low.includes('primax') || low.includes('biomax') || low.includes('texaco') || low.includes('transmilenio') || low.includes('metro') || low.includes('peaje') || low.includes('bus') || low.includes('taxi') || low.includes('pasaje') || low.includes('parqueadero')) {
     return { categoria: 'Transporte y Gasolina', esEsencial: true };
   }
-  if (low.includes('netflix') || low.includes('spotify') || low.includes('disney') || low.includes('prime') || low.includes('youtube') || low.includes('hbo') || low.includes('max') || low.includes('suscripcion')) {
+  if (low.includes('netflix') || low.includes('spotify') || low.includes('disney') || low.includes('prime') || low.includes('youtube') || low.includes('hbo') || low.includes('max') || low.includes('suscripcion') || low.includes('apple') || low.includes('google play') || low.includes('icloud')) {
     return { categoria: 'Suscripciones Digitales', esEsencial: false };
   }
-  if (low.includes('restaurante') || low.includes('crepes') || low.includes('rappi') || low.includes('cine') || low.includes('bar') || low.includes('comida') || low.includes('almuerzo') || low.includes('cena') || low.includes('hamburguesa') || low.includes('pizza') || low.includes('pollo')) {
+  if (low.includes('restaurante') || low.includes('crepes') || low.includes('rappi') || low.includes('cine') || low.includes('bar') || low.includes('comida') || low.includes('almuerzo') || low.includes('cena') || low.includes('hamburguesa') || low.includes('pizza') || low.includes('pollo') || low.includes('kfc') || low.includes('mcdonald') || low.includes('frisby') || low.includes('kokoriko')) {
     return { categoria: 'Entretenimiento y Salidas', esEsencial: false };
   }
-  if (low.includes('cafe') || low.includes('café') || low.includes('juan valdez') || low.includes('tinto') || low.includes('postre') || low.includes('empanada') || low.includes('mecato') || low.includes('helado') || low.includes('antojo')) {
+  if (low.includes('cafe') || low.includes('café') || low.includes('juan valdez') || low.includes('tinto') || low.includes('postre') || low.includes('empanada') || low.includes('mecato') || low.includes('helado') || low.includes('antojo') || low.includes('oxxo') || low.includes('tostao')) {
     return { categoria: 'Gastos Hormiga / Café / Snacks', esEsencial: false };
   }
-  if (low.includes('farmacia') || low.includes('drogueria') || low.includes('salud') || low.includes('eps') || low.includes('cita') || low.includes('gimnasio') || low.includes('smartfit') || low.includes('medicamento')) {
+  if (low.includes('farmacia') || low.includes('drogueria') || low.includes('droguería') || low.includes('rebaja') || low.includes('cruz verde') || low.includes('pasteur') || low.includes('colsubsidio') || low.includes('salud') || low.includes('eps') || low.includes('cita') || low.includes('gimnasio') || low.includes('smartfit') || low.includes('medicamento')) {
     return { categoria: 'Salud y Bienestar', esEsencial: true };
   }
   if (low.includes('cuota') || low.includes('tarjeta') || low.includes('crédito') || low.includes('credito') || low.includes('manejo') || low.includes('intereses')) {
@@ -189,11 +214,18 @@ export function runOnDeviceFinancialAnalysis(params: {
   const movimientosDetectados: ExtractedTransactionItem[] = [];
   let datosExtractoCredito: ExtractedCreditSummary | undefined = undefined;
 
-  // Dividir por líneas o por punto y coma si vienen varias notificaciones juntas
-  const lines = rawText
+  // Dividir por líneas o por punto y coma
+  const rawLines = rawText
     .split(/\r?\n|;\s+/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
+
+  // Si es una notificación de varias líneas donde solo 1 línea tiene monto en $, unir las líneas para no perder el comercio ni el banco
+  const linesWithAmounts = rawLines.filter((l) => parseAllNumbersFromText(l).length > 0);
+  const lines =
+    linesWithAmounts.length === 1 && rawLines.length > 1
+      ? [rawLines.join(' ')]
+      : rawLines;
 
   for (const line of lines) {
     const lineLow = line.toLowerCase();
@@ -226,7 +258,8 @@ export function runOnDeviceFinancialAnalysis(params: {
       lineLow.includes('nómina') ||
       lineLow.includes('nomina') ||
       lineLow.includes('transferencia recibida') ||
-      lineLow.includes('ingreso')
+      lineLow.includes('ingreso') ||
+      lineLow.includes('recarga exitosa')
     ) {
       tipo = 'ganancia';
     } else if (
@@ -247,6 +280,7 @@ export function runOnDeviceFinancialAnalysis(params: {
     const cleanDesc = line
       .replace(/^\d+[.) -]+/, '')
       .replace(/si no reconoce esta operacion.*/i, '')
+      .replace(/dudas al \d+.*/i, '')
       .trim()
       .slice(0, 95);
 

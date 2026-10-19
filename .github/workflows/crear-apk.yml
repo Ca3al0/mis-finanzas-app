@@ -1,4 +1,4 @@
-name: Build APK con Lector Automatico de Notificaciones (Samsung A36 5G)
+name: Build APK con Permisos y Lector Automatico de Notificaciones y SMS (Samsung A36 5G)
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Compilar aplicación y generar APK con Lector 100% Automático en Segundo Plano
+      - name: Compilar aplicación y generar APK con Solicitud Automática de Permisos y Lector en Segundo Plano
         run: |
           if [ -f package.json ]; then
             npm install --legacy-peer-deps
@@ -41,58 +41,235 @@ jobs:
           npx cap add android
           npx cap copy android
 
-          # Inyectar Servicio Nativo Android de Lectura 100% Automática en Segundo Plano (NotificationListenerService)
           JAVA_DIR="android/app/src/main/java/com/misfinanzas/personal/a36"
           mkdir -p "$JAVA_DIR"
 
+          # 1. Servicio Nativo Android de Lectura 100% Automática de Notificaciones (incluyendo notificaciones agrupadas One UI Samsung)
           cat << 'EOF' > "$JAVA_DIR/BankNotificationListener.java"
           package com.misfinanzas.personal.a36;
 
           import android.app.Notification;
+          import android.content.Context;
           import android.content.SharedPreferences;
           import android.os.Bundle;
           import android.service.notification.NotificationListenerService;
           import android.service.notification.StatusBarNotification;
           import org.json.JSONArray;
           import org.json.JSONObject;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
 
           public class BankNotificationListener extends NotificationListenerService {
+              public static BankNotificationListener instance;
+
+              @Override
+              public void onListenerConnected() {
+                  super.onListenerConnected();
+                  instance = this;
+                  scanAllActiveNotifications();
+              }
+
+              @Override
+              public void onListenerDisconnected() {
+                  super.onListenerDisconnected();
+                  if (instance == this) instance = null;
+              }
+
+              public void scanAllActiveNotifications() {
+                  try {
+                      StatusBarNotification[] active = getActiveNotifications();
+                      if (active != null) {
+                          for (StatusBarNotification sbn : active) {
+                              processStatusBarNotification(sbn);
+                          }
+                      }
+                  } catch (Exception ignored) {
+                  }
+              }
+
               @Override
               public void onNotificationPosted(StatusBarNotification sbn) {
+                  processStatusBarNotification(sbn);
+              }
+
+              private void processStatusBarNotification(StatusBarNotification sbn) {
                   try {
                       if (sbn == null || sbn.getNotification() == null) return;
-                      String pkg = sbn.getPackageName() != null ? sbn.getPackageName() : "";
-                      if (pkg.equals(getPackageName())) return;
+                      Notification notif = sbn.getNotification();
+                      if ((notif.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
 
-                      Bundle extras = sbn.getNotification().extras;
+                      String pkg = sbn.getPackageName() != null ? sbn.getPackageName() : "";
+                      if (pkg.equals(getPackageName()) || pkg.contains("systemui") || pkg.contains("android.providers.downloads")) return;
+
+                      Bundle extras = notif.extras;
                       if (extras == null) return;
 
                       CharSequence titleCs = extras.getCharSequence(Notification.EXTRA_TITLE);
+                      CharSequence bigTitleCs = extras.getCharSequence(Notification.EXTRA_TITLE_BIG);
                       CharSequence textCs = extras.getCharSequence(Notification.EXTRA_TEXT);
                       CharSequence bigTextCs = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+                      CharSequence subTextCs = extras.getCharSequence(Notification.EXTRA_SUB_TEXT);
+                      CharSequence summaryCs = extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT);
+                      CharSequence[] textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
 
-                      String title = titleCs != null ? titleCs.toString() : "";
-                      String body = bigTextCs != null ? bigTextCs.toString() : (textCs != null ? textCs.toString() : "");
-                      String fullText = (title + ": " + body).trim();
+                      String title = bigTitleCs != null ? bigTitleCs.toString() : (titleCs != null ? titleCs.toString() : "");
+                      StringBuilder bodyBuilder = new StringBuilder();
+                      if (bigTextCs != null && bigTextCs.length() > 0) {
+                          bodyBuilder.append(bigTextCs.toString());
+                      } else if (textCs != null && textCs.length() > 0) {
+                          bodyBuilder.append(textCs.toString());
+                      }
+                      if (textLines != null && textLines.length > 0) {
+                          for (CharSequence line : textLines) {
+                              if (line != null && line.length() > 0) {
+                                  if (bodyBuilder.length() > 0) bodyBuilder.append(" | ");
+                                  bodyBuilder.append(line.toString());
+                              }
+                          }
+                      }
+                      if (subTextCs != null && subTextCs.length() > 0) {
+                          bodyBuilder.append(" ").append(subTextCs.toString());
+                      }
+                      if (summaryCs != null && summaryCs.length() > 0) {
+                          bodyBuilder.append(" ").append(summaryCs.toString());
+                      }
+                      if (bodyBuilder.length() == 0 && notif.tickerText != null) {
+                          bodyBuilder.append(notif.tickerText.toString());
+                      }
 
+                      String body = bodyBuilder.toString().trim();
+                      if (body.isEmpty()) return;
+
+                      String fullText = (title.isEmpty() ? body : (title + ": " + body)).trim();
                       String low = (pkg + " " + fullText).toLowerCase();
-                      if (low.contains("$") || low.contains("compra") || low.contains("recibiste") ||
-                          low.contains("pagaste") || low.contains("nequi") || low.contains("bancolombia") ||
-                          low.contains("daviplata") || low.contains("nu") || low.contains("transferencia") ||
+
+                      boolean isFinancial =
+                          low.contains("$") || low.contains("cop") || low.contains("compra") ||
+                          low.contains("recibiste") || low.contains("pagaste") || low.contains("enviaste") ||
+                          low.contains("nequi") || low.contains("bancolombia") || low.contains("daviplata") ||
+                          low.contains("nu") || low.contains("nubank") || low.contains("transferencia") ||
                           low.contains("abono") || low.contains("davivienda") || low.contains("bbva") ||
-                          low.contains("retiro") || low.contains("factura") || low.contains("pago")) {
+                          low.contains("lulo") || low.contains("dale") || low.contains("movii") ||
+                          low.contains("retiro") || low.contains("factura") || low.contains("pago") ||
+                          low.contains("aprobada") || low.contains("exitosa") || low.contains("consumo") ||
+                          low.contains("debito") || low.contains("débito") || low.contains("credito") ||
+                          low.contains("crédito") || low.contains("transaccion") || low.contains("transacción") ||
+                          low.contains("cuota") || low.contains("saldo") || low.contains("pse") ||
+                          low.contains("transfiya") || low.contains("rappi") || low.contains("mercadopago");
 
-                          SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
-                          String currentJson = prefs.getString("queue", "[]");
-                          JSONArray arr = new JSONArray(currentJson);
+                      if (isFinancial) {
+                          saveAndBroadcastNotification(this, title.isEmpty() ? pkg : title, fullText);
+                      }
+                  } catch (Exception ignored) {
+                  }
+              }
 
-                          JSONObject item = new JSONObject();
-                          item.put("app", title.isEmpty() ? pkg : title);
-                          item.put("text", fullText);
-                          item.put("time", System.currentTimeMillis());
-                          arr.put(item);
+              public static synchronized void saveAndBroadcastNotification(Context ctx, String appName, String fullText) {
+                  try {
+                      SharedPreferences prefs = ctx.getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                      String lastText = prefs.getString("last_text", "");
+                      long lastTime = prefs.getLong("last_time", 0L);
+                      long now = System.currentTimeMillis();
 
-                          prefs.edit().putString("queue", arr.toString()).apply();
+                      // Evitar duplicados exactos en menos de 4 segundos
+                      if (fullText.equals(lastText) && (now - lastTime) < 4000L) {
+                          return;
+                      }
+
+                      String currentJson = prefs.getString("queue", "[]");
+                      JSONArray arr = new JSONArray(currentJson);
+
+                      JSONObject item = new JSONObject();
+                      item.put("app", appName);
+                      item.put("text", fullText);
+                      item.put("time", now);
+                      arr.put(item);
+
+                      prefs.edit()
+                          .putString("queue", arr.toString())
+                          .putString("last_text", fullText)
+                          .putLong("last_time", now)
+                          .apply();
+
+                      if (MainActivity.instance != null) {
+                          MainActivity.instance.pushPendingToWebView();
+                      }
+
+                      // También sincronizar con el receptor en la nube para que aparezca si abre la PWA/Web
+                      new Thread(() -> {
+                          String[] urls = new String[]{
+                              "https://ais-pre-4s6kjtsko5cj52axuli7l3-147664983550.us-west2.run.app/api/webhook/notificacion",
+                              "https://ais-dev-4s6kjtsko5cj52axuli7l3-147664983550.us-west2.run.app/api/webhook/notificacion"
+                          };
+                          for (String u : urls) {
+                              try {
+                                  URL url = new URL(u);
+                                  HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                                  conn.setRequestMethod("POST");
+                                  conn.setConnectTimeout(5000);
+                                  conn.setReadTimeout(5000);
+                                  conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                                  conn.setDoOutput(true);
+                                  JSONObject payload = new JSONObject();
+                                  payload.put("app", appName);
+                                  payload.put("texto", fullText);
+                                  byte[] out = payload.toString().getBytes(StandardCharsets.UTF_8);
+                                  try (OutputStream os = conn.getOutputStream()) {
+                                      os.write(out);
+                                  }
+                                  conn.getResponseCode();
+                                  conn.disconnect();
+                              } catch (Exception ignored) {
+                              }
+                          }
+                      }).start();
+                  } catch (Exception ignored) {
+                  }
+              }
+          }
+          EOF
+
+          # 2. Receptor Nativo de SMS Bancarios (captura mensajes de texto de compras y bancos automáticamente)
+          cat << 'EOF' > "$JAVA_DIR/SmsBankReceiver.java"
+          package com.misfinanzas.personal.a36;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.telephony.SmsMessage;
+
+          public class SmsBankReceiver extends BroadcastReceiver {
+              @Override
+              public void onReceive(Context context, Intent intent) {
+                  try {
+                      if (intent == null || !"android.provider.Telephony.SMS_RECEIVED".equals(intent.getAction())) return;
+                      Bundle bundle = intent.getExtras();
+                      if (bundle == null) return;
+                      Object[] pdus = (Object[]) bundle.get("pdus");
+                      String format = bundle.getString("format");
+                      if (pdus == null) return;
+
+                      StringBuilder fullSms = new StringBuilder();
+                      String sender = "SMS Banco";
+                      for (Object pdu : pdus) {
+                          SmsMessage msg = format != null
+                              ? SmsMessage.createFromPdu((byte[]) pdu, format)
+                              : SmsMessage.createFromPdu((byte[]) pdu);
+                          if (msg != null) {
+                              if (msg.getOriginatingAddress() != null) {
+                                  sender = "SMS " + msg.getOriginatingAddress();
+                              }
+                              if (msg.getMessageBody() != null) {
+                                  fullSms.append(msg.getMessageBody());
+                              }
+                          }
+                      }
+                      String body = fullSms.toString().trim();
+                      if (!body.isEmpty()) {
+                          BankNotificationListener.saveAndBroadcastNotification(context, sender, body);
                       }
                   } catch (Exception ignored) {
                   }
@@ -100,24 +277,153 @@ jobs:
           }
           EOF
 
+          # 3. MainActivity con solicitud automática de permisos al iniciar + diálogo nativo + empuje en vivo al WebView
           cat << 'EOF' > "$JAVA_DIR/MainActivity.java"
           package com.misfinanzas.personal.a36;
 
+          import android.app.AlertDialog;
           import android.content.ComponentName;
           import android.content.Intent;
           import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
           import android.net.Uri;
+          import android.os.Build;
           import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.provider.Settings;
           import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
           import com.getcapacitor.BridgeActivity;
+          import java.util.ArrayList;
+          import java.util.List;
 
           public class MainActivity extends BridgeActivity {
+              public static MainActivity instance;
+              private final Handler syncHandler = new Handler(Looper.getMainLooper());
+              private final Runnable syncRunnable = new Runnable() {
+                  @Override
+                  public void run() {
+                      pushPendingToWebView();
+                      syncHandler.postDelayed(this, 2500);
+                  }
+              };
+
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  instance = this;
+
                   if (this.bridge != null && this.bridge.getWebView() != null) {
-                      this.bridge.getWebView().addJavascriptInterface(new AndroidNativeBridge(), "AndroidNativeBridge");
+                      WebView wv = this.bridge.getWebView();
+                      wv.getSettings().setJavaScriptEnabled(true);
+                      wv.addJavascriptInterface(new AndroidNativeBridge(), "AndroidNativeBridge");
+                      // Recargar una vez para que window.AndroidNativeBridge esté disponible desde el inicio en JS
+                      wv.reload();
+                  }
+
+                  // Pedir permisos en tiempo de ejecución automáticamente al abrir la app
+                  requestRuntimePermissionsAutomatically();
+
+                  // Si aún no tiene activado el lector de notificaciones en Android, mostrar diálogo nativo para activarlo
+                  new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                      if (!checkNotificationListenerGranted()) {
+                          showNativePermissionSetupDialog();
+                      }
+                  }, 1200);
+
+                  syncHandler.postDelayed(syncRunnable, 2000);
+              }
+
+              @Override
+              public void onResume() {
+                  super.onResume();
+                  instance = this;
+                  if (BankNotificationListener.instance != null) {
+                      BankNotificationListener.instance.scanAllActiveNotifications();
+                  }
+                  pushPendingToWebView();
+              }
+
+              @Override
+              public void onDestroy() {
+                  super.onDestroy();
+                  syncHandler.removeCallbacks(syncRunnable);
+                  if (instance == this) instance = null;
+              }
+
+              public void requestRuntimePermissionsAutomatically() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      List<String> needed = new ArrayList<>();
+                      if (Build.VERSION.SDK_INT >= 33) {
+                          if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                              needed.add("android.permission.POST_NOTIFICATIONS");
+                          }
+                      }
+                      if (checkSelfPermission("android.permission.RECEIVE_SMS") != PackageManager.PERMISSION_GRANTED) {
+                          needed.add("android.permission.RECEIVE_SMS");
+                      }
+                      if (checkSelfPermission("android.permission.READ_SMS") != PackageManager.PERMISSION_GRANTED) {
+                          needed.add("android.permission.READ_SMS");
+                      }
+                      if (!needed.isEmpty()) {
+                          requestPermissions(needed.toArray(new String[0]), 101);
+                      }
+                  }
+              }
+
+              public boolean checkNotificationListenerGranted() {
+                  String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+                  if (flat != null) {
+                      ComponentName cn = new ComponentName(MainActivity.this, BankNotificationListener.class);
+                      return flat.contains(cn.flattenToString()) || flat.contains(getPackageName());
+                  }
+                  return false;
+              }
+
+              public void showNativePermissionSetupDialog() {
+                  try {
+                      if (isFinishing()) return;
+                      new AlertDialog.Builder(this)
+                          .setTitle("🔔 Activar Lectura Automática de Compras")
+                          .setMessage("Para que Mis Finanzas detecte y registre sola tus notificaciones de Nequi, Bancolombia, Daviplata, Nu y SMS:\n\n1. Si Samsung bloquea el interruptor ('Ajustes restringidos'), toca primero '1. Desbloquear en Info de App' -> 3 puntos arriba a la derecha -> 'Permitir ajustes restringidos'.\n\n2. Luego toca '2. Activar Notificaciones' y enciende Mis Finanzas.")
+                          .setPositiveButton("2. Activar Notificaciones", (d, w) -> {
+                              Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+                              intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(intent);
+                          })
+                          .setNeutralButton("1. Desbloquear en Info de App", (d, w) -> {
+                              Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                              intent.setData(Uri.fromParts("package", getPackageName(), null));
+                              intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(intent);
+                          })
+                          .setNegativeButton("Ahora no", null)
+                          .show();
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              public void pushPendingToWebView() {
+                  try {
+                      if (this.bridge == null || this.bridge.getWebView() == null) return;
+                      SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
+                      final String queueJson = prefs.getString("queue", "[]");
+                      final boolean listenerActive = checkNotificationListenerGranted();
+
+                      this.bridge.getWebView().post(() -> {
+                          try {
+                              String jsStatus = "window.__nativeListenerGranted = " + listenerActive + ";";
+                              this.bridge.getWebView().evaluateJavascript(jsStatus, null);
+                              if (queueJson != null && !queueJson.equals("[]")) {
+                                  prefs.edit().putString("queue", "[]").apply();
+                                  String jsCall = "if (window.__onAndroidNotificationsBatch) { window.__onAndroidNotificationsBatch(" + queueJson + "); }";
+                                  this.bridge.getWebView().evaluateJavascript(jsCall, null);
+                              }
+                          } catch (Exception ignored) {
+                          }
+                      });
+                  } catch (Exception ignored) {
                   }
               }
 
@@ -138,13 +444,26 @@ jobs:
                   }
 
                   @JavascriptInterface
-                  public boolean isNotificationListenerEnabled() {
-                      String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-                      if (flat != null) {
-                          ComponentName cn = new ComponentName(MainActivity.this, BankNotificationListener.class);
-                          return flat.contains(cn.flattenToString());
+                  public void requestAllRuntimePermissions() {
+                      runOnUiThread(() -> {
+                          requestRuntimePermissionsAutomatically();
+                          if (!checkNotificationListenerGranted()) {
+                              showNativePermissionSetupDialog();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void scanActiveNotificationsNow() {
+                      if (BankNotificationListener.instance != null) {
+                          BankNotificationListener.instance.scanAllActiveNotifications();
                       }
-                      return false;
+                      runOnUiThread(() -> pushPendingToWebView());
+                  }
+
+                  @JavascriptInterface
+                  public boolean isNotificationListenerEnabled() {
+                      return checkNotificationListenerGranted();
                   }
 
                   @JavascriptInterface
@@ -162,9 +481,10 @@ jobs:
           }
           EOF
 
-          # Registrar el servicio automático en AndroidManifest.xml
+          # Registrar permisos y servicios automáticos en AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's|</application>|<service android:name=".BankNotificationListener" android:label="Mis Finanzas Lector Automatico" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service></application>|' "$MANIFEST"
+          sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" /><uses-permission android:name="android.permission.RECEIVE_SMS" /><uses-permission android:name="android.permission.READ_SMS" /><uses-permission android:name="android.permission.FOREGROUND_SERVICE" /><application|' "$MANIFEST"
+          sed -i 's|</application>|<service android:name=".BankNotificationListener" android:label="Mis Finanzas Lector Automatico" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service><receiver android:name=".SmsBankReceiver" android:permission="android.permission.BROADCAST_SMS" android:exported="true"><intent-filter android:priority="999"><action android:name="android.provider.Telephony.SMS_RECEIVED" /></intent-filter></receiver></application>|' "$MANIFEST"
 
           # Generar certificado personal propio
           mkdir -p ~/.android
@@ -183,7 +503,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Subir APK con Lector Automático de Notificaciones
+      - name: Subir APK con Lector Automático de Notificaciones y SMS
         uses: actions/upload-artifact@v4
         with:
           name: app-finanzas-apk

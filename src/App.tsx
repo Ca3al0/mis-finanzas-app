@@ -411,7 +411,119 @@ export function App() {
     [currency, handleAddMultipleTransactions, handleRecordProcessedNotification, showToast]
   );
 
+  const [showPermissionsBanner, setShowPermissionsBanner] = useState<boolean>(true);
+  const [permissionStatusText, setPermissionStatusText] = useState<string>('');
+
+  const handleGlobalRequestPermissions = async () => {
+    const results: string[] = [];
+
+    // 1. Si está en el APK nativo, disparar solicitud de permisos Android (POST_NOTIFICATIONS, SMS y Diálogo Nativo)
+    if (window.AndroidNativeBridge?.requestAllRuntimePermissions) {
+      try {
+        window.AndroidNativeBridge.requestAllRuntimePermissions();
+        results.push('Diálogo de permisos Android abierto');
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Pedir permiso de Notificaciones Web / PWA
+    if (typeof Notification !== 'undefined' && Notification.requestPermission) {
+      try {
+        const perm = await Notification.requestPermission();
+        if (perm === 'granted') {
+          results.push('Notificaciones activadas ✓');
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 3. Pedir permiso de lectura de portapapeles dentro del toque del usuario y analizar si hay una compra copiada
+    if (navigator.clipboard?.readText) {
+      try {
+        const clip = (await navigator.clipboard.readText())?.trim();
+        results.push('Portapapeles autorizado ✓');
+        if (
+          clip &&
+          clip.length >= 8 &&
+          /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
+        ) {
+          processIncomingNotification('Portapapeles', clip);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 4. Si está en el APK, escanear notificaciones activas de la barra de estado
+    if (window.AndroidNativeBridge?.scanActiveNotificationsNow) {
+      try {
+        window.AndroidNativeBridge.scanActiveNotificationsNow();
+      } catch {
+        // ignore
+      }
+    }
+
+    const msg =
+      results.length > 0
+        ? `🔔 ${results.join(' • ')}`
+        : '🔔 Solicitud enviada. Si usas Samsung A36, toca también "Abrir Acceso a Notificaciones".';
+    setPermissionStatusText(msg);
+    showToast(msg);
+  };
+
+  const handleGlobalOpenNotificationSettings = () => {
+    if (window.AndroidNativeBridge?.openNotificationSettings) {
+      window.AndroidNativeBridge.openNotificationSettings();
+      return;
+    }
+    if (/android/i.test(navigator.userAgent)) {
+      window.location.href = 'intent:#Intent;action=android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS;end';
+    } else {
+      setActiveSection('escaner');
+      showToast('En tu Samsung A36 ve a: Ajustes → Notificaciones → Ajustes avanzados → Acceso a notificaciones.');
+    }
+  };
+
+  const handleGlobalOpenAppDetails = () => {
+    if (window.AndroidNativeBridge?.openAppDetailsSettings) {
+      window.AndroidNativeBridge.openAppDetailsSettings();
+      return;
+    }
+    if (/android/i.test(navigator.userAgent)) {
+      window.location.href =
+        'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.misfinanzas.personal.a36;end';
+    } else {
+      setActiveSection('escaner');
+      showToast('En tu Samsung A36 ve a: Ajustes → Aplicaciones → Mis Finanzas → 3 puntos (⋮) → Permitir ajustes restringidos.');
+    }
+  };
+
   useEffect(() => {
+    // Recibir lotes de notificaciones empujadas directamente desde Java (MainActivity / BankNotificationListener / SmsBankReceiver)
+    window.__onAndroidNotificationsBatch = (items) => {
+      if (Array.isArray(items)) {
+        items.forEach((item) => {
+          if (item?.text) {
+            processIncomingNotification(item.app || 'Banco Android', item.text);
+          }
+        });
+      }
+    };
+
+    // Procesar texto compartido hacia la app desde el menú "Compartir" de Android (Web Share Target)
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sharedText = params.get('text') || params.get('notificacion') || params.get('title');
+      if (sharedText && sharedText.trim().length > 4) {
+        processIncomingNotification('Compartido Android', sharedText.trim());
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch {
+      // ignore
+    }
+
     const onNativeEvent = (e: Event) => {
       const custom = e as CustomEvent<{ app?: string; text?: string }>;
       if (custom.detail?.text) {
@@ -460,7 +572,7 @@ export function App() {
     };
 
     syncNativeBridgeQueue();
-    const interval = setInterval(syncNativeBridgeQueue, 4000);
+    const interval = setInterval(syncNativeBridgeQueue, 3000);
     return () => {
       window.removeEventListener('native-notification', onNativeEvent);
       clearInterval(interval);
@@ -864,6 +976,16 @@ export function App() {
           </div>
 
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowPermissionsBanner((v) => !v)}
+              className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1 shadow transition"
+              title="Habilitar permisos de lectura automática de notificaciones"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span>Permisos</span>
+            </button>
+
             <select
               value={currency}
               onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
@@ -944,6 +1066,62 @@ export function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-4 space-y-4">
+        {/* Barra Superior de Activación de Permisos y Escaneo en Vivo (Visible en cualquier pestaña) */}
+        {showPermissionsBanner && (
+          <section className="bg-indigo-950/50 border border-indigo-500/40 rounded-2xl p-3.5 space-y-2.5 shadow-md">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-indigo-400 animate-bounce shrink-0" />
+                <span className="text-xs font-bold text-white">
+                  Permisos de Lectura Automática de Compras y Notificaciones (Samsung A36 5G)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPermissionsBanner(false)}
+                className="text-[11px] text-slate-400 hover:text-white px-2 py-0.5 rounded bg-slate-900/80"
+              >
+                Ocultar
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={handleGlobalRequestPermissions}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
+              >
+                <Bell className="w-3.5 h-3.5 shrink-0" />
+                <span>1. Pedir Permisos Ahora</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleGlobalOpenAppDetails}
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
+              >
+                <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                <span>2. Ajustes Restringidos Samsung</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleGlobalOpenNotificationSettings}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                <span>3. Activar Acceso Notificaciones</span>
+              </button>
+            </div>
+
+            {permissionStatusText && (
+              <div className="text-[11px] text-emerald-300 font-semibold bg-slate-950/80 border border-emerald-500/30 rounded-lg px-3 py-1.5">
+                {permissionStatusText}
+              </div>
+            )}
+          </section>
+        )}
+
         {/* Panel Principal de Estado Financiero Real */}
         <section className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 border border-slate-800 rounded-2xl p-4 shadow-lg">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">

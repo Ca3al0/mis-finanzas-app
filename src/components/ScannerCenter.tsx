@@ -57,9 +57,13 @@ interface ScannerCenterProps {
 
 declare global {
   interface Window {
+    __nativeListenerGranted?: boolean;
+    __onAndroidNotificationsBatch?: (items: { app?: string; text?: string; time?: number }[]) => void;
     AndroidNativeBridge?: {
       openNotificationSettings?: () => void;
       openAppDetailsSettings?: () => void;
+      requestAllRuntimePermissions?: () => void;
+      scanActiveNotificationsNow?: () => void;
       isNotificationListenerEnabled?: () => boolean;
       getCapturedNotificationsJson?: () => string;
       clearCapturedNotifications?: () => void;
@@ -92,6 +96,10 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
   const [autoClipboardEnabled] = useState<boolean>(true);
   const [hasNativeAndroidBridge, setHasNativeAndroidBridge] = useState<boolean>(false);
   const [nativePermissionGranted, setNativePermissionGranted] = useState<boolean>(false);
+  const [webNotifPerm, setWebNotifPerm] = useState<string>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  );
+  const [clipboardPermGranted, setClipboardPermGranted] = useState<boolean>(false);
 
   // Estado del Modal de Historial de los últimos 30 días
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
@@ -106,18 +114,29 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
   useEffect(() => {
     const checkBridge = () => {
+      if (typeof Notification !== 'undefined') {
+        setWebNotifPerm(Notification.permission);
+      }
       if (window.AndroidNativeBridge) {
         setHasNativeAndroidBridge(true);
         try {
-          setNativePermissionGranted(Boolean(window.AndroidNativeBridge.isNotificationListenerEnabled?.()));
+          setNativePermissionGranted(
+            Boolean(window.AndroidNativeBridge.isNotificationListenerEnabled?.() || window.__nativeListenerGranted)
+          );
         } catch {
           // ignore
         }
+      } else if (window.__nativeListenerGranted) {
+        setNativePermissionGranted(true);
       }
     };
     checkBridge();
+    const interval = setInterval(checkBridge, 2500);
     window.addEventListener('focus', checkBridge);
-    return () => window.removeEventListener('focus', checkBridge);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', checkBridge);
+    };
   }, []);
 
   // Filtrar registros de los últimos 30 días
@@ -242,17 +261,200 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       }
     };
 
+    // En Android Chrome/WebView, leer el portapapeles requiere un gesto táctil (pointerdown/click) además de focus
+    const handleFirstTouchAfterFocus = () => {
+      handleVisibilityOrFocus();
+    };
+
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('pointerdown', handleFirstTouchAfterFocus, { passive: true });
     return () => {
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('pointerdown', handleFirstTouchAfterFocus);
     };
   }, [autoClipboardEnabled, autoSaveOnDetect, currency]);
+
+  // Solicitar TODOS los permisos (Android Runtime + Notificaciones Web + Portapapeles + Escaneo en vivo)
+  const handleRequestAllPermissions = async () => {
+    let statusMessages: string[] = [];
+
+    // 1. Si está en el APK nativo, disparar solicitud de permisos Android (POST_NOTIFICATIONS, SMS y Diálogo de Acceso a Notificaciones)
+    if (window.AndroidNativeBridge?.requestAllRuntimePermissions) {
+      try {
+        window.AndroidNativeBridge.requestAllRuntimePermissions();
+        statusMessages.push('Diálogo nativo de Android abierto');
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Pedir permiso de Notificaciones del navegador / PWA
+    if (typeof Notification !== 'undefined' && Notification.requestPermission) {
+      try {
+        const perm = await Notification.requestPermission();
+        setWebNotifPerm(perm);
+        if (perm === 'granted') {
+          statusMessages.push('Permiso de notificaciones concedido ✓');
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 3. Pedir permiso de lectura de portapapeles dentro del gesto del usuario y analizar si hay una notificación bancaria
+    if (navigator.clipboard?.readText) {
+      try {
+        const clip = (await navigator.clipboard.readText())?.trim();
+        setClipboardPermGranted(true);
+        statusMessages.push('Lectura automática de portapapeles activa ✓');
+        if (
+          clip &&
+          clip.length >= 8 &&
+          parseAllNumbersFromText(clip).length > 0 &&
+          /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
+        ) {
+          lastClipboardRef.current = clip;
+          setInputText(clip);
+          const res = runOnDeviceFinancialAnalysis({ sourceType: 'notificacion', text: clip });
+          setAnalysisResult(res);
+          if (res.movimientosDetectados.length > 0) {
+            recordSuccessfulScan(res, clip, 'notificacion');
+            if (autoSaveOnDetect) {
+              saveDetectedMovementsAutomatically(res, 'notificacion');
+              statusMessages.push(`¡Se detectó y guardó compra por ${formatCurrency(res.movimientosDetectados[0].monto, currency)}!`);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 4. Escanear notificaciones activas en la barra de estado si el puente Android está activo
+    if (window.AndroidNativeBridge?.scanActiveNotificationsNow) {
+      try {
+        window.AndroidNativeBridge.scanActiveNotificationsNow();
+      } catch {
+        // ignore
+      }
+    }
+
+    setSavedBanner(
+      statusMessages.length > 0
+        ? `🔔 Permisos verificados: ${statusMessages.join(' • ')}`
+        : '🔔 Solicitud de permisos enviada. Si usas Samsung A36, toca también "Abrir Acceso a Notificaciones de Android".'
+    );
+  };
+
+  // Abrir pantalla de Ajustes de la App en Samsung A36 (para permitir Ajustes Restringidos)
+  const handleOpenAppDetailsSettings = () => {
+    if (window.AndroidNativeBridge?.openAppDetailsSettings) {
+      window.AndroidNativeBridge.openAppDetailsSettings();
+      return;
+    }
+    // En Chrome Android / WebView, abrir directamente la pantalla de información de la app o ajustes de aplicaciones
+    const isAndroid = /android/i.test(navigator.userAgent);
+    if (isAndroid) {
+      window.location.href =
+        'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.misfinanzas.personal.a36;end';
+    } else {
+      alert(
+        'En tu Samsung Galaxy A36 5G ve a: Ajustes → Aplicaciones → Mis Finanzas → toca los 3 puntos (⋮) arriba a la derecha → "Permitir ajustes restringidos".'
+      );
+    }
+  };
+
+  // Abrir pantalla del sistema Android "Acceso a notificaciones" (NotificationListenerService)
+  const handleOpenNotificationAccessSettings = () => {
+    if (window.AndroidNativeBridge?.openNotificationSettings) {
+      window.AndroidNativeBridge.openNotificationSettings();
+      return;
+    }
+    const isAndroid = /android/i.test(navigator.userAgent);
+    if (isAndroid) {
+      window.location.href = 'intent:#Intent;action=android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS;end';
+    } else {
+      alert(
+        'En tu Samsung Galaxy A36 5G ve a: Ajustes → Notificaciones → Ajustes avanzados → Acceso a notificaciones → activa "Mis Finanzas".'
+      );
+    }
+  };
+
+  // Sincronizar y escanear al instante todas las fuentes (Barra de estado Android + Webhook en vivo + Portapapeles)
+  const handleScanAllSourcesNow = async () => {
+    let foundCount = 0;
+
+    // 1. Escanear barra de estado Android si está en el APK
+    try {
+      window.AndroidNativeBridge?.scanActiveNotificationsNow?.();
+      const rawJson = window.AndroidNativeBridge?.getCapturedNotificationsJson?.();
+      if (rawJson && rawJson !== '[]') {
+        const list = JSON.parse(rawJson);
+        if (Array.isArray(list) && list.length > 0) {
+          list.forEach((item: any) => {
+            if (item?.text) {
+              onSimulateIncomingNotif(item.app || 'Android', item.text);
+              foundCount++;
+            }
+          });
+          window.AndroidNativeBridge?.clearCapturedNotifications?.();
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2. Revisar cola del servidor Webhook (/api/webhook/pendientes)
+    try {
+      const res = await fetch('/api/webhook/pendientes');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.items) && data.items.length > 0) {
+          data.items.forEach((item: any) => {
+            if (item?.text) {
+              onSimulateIncomingNotif(item.app || 'Webhook Automático', item.text);
+              foundCount++;
+            }
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3. Revisar portapapeles dentro del gesto táctil
+    try {
+      const clip = (await navigator.clipboard.readText())?.trim();
+      setClipboardPermGranted(true);
+      if (
+        clip &&
+        clip !== lastClipboardRef.current &&
+        parseAllNumbersFromText(clip).length > 0 &&
+        /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
+      ) {
+        lastClipboardRef.current = clip;
+        onSimulateIncomingNotif('Portapapeles', clip);
+        foundCount++;
+      }
+    } catch {
+      // ignore
+    }
+
+    if (foundCount > 0) {
+      setSavedBanner(`✅ ¡Se encontraron y procesaron ${foundCount} notificación(es) pendiente(s)!`);
+    } else {
+      setSavedBanner(
+        '📡 Escaneo completado: No hay notificaciones nuevas pendientes en la cola. Si acabas de instalar la app, activa abajo "3. Abrir Acceso a Notificaciones de Android".'
+      );
+    }
+  };
 
   const handlePasteFromClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
+      setClipboardPermGranted(true);
       if (text && text.trim()) {
         setInputText(text);
         const res = runOnDeviceFinancialAnalysis({
@@ -433,19 +635,34 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Panel de Estado y Control del Lector de Notificaciones */}
-      <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-4 space-y-3">
+      {/* Panel de Estado y Control de Permisos del Lector de Notificaciones (SIEMPRE VISIBLE) */}
+      <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl p-4 space-y-3.5 shadow-lg">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
               <Radio className="w-5 h-5 text-indigo-400 animate-pulse" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">
-                Sistema Lector de Notificaciones Bancarias
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-bold text-white">
+                  Centro de Permisos y Lector Automático Bancario
+                </h2>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    nativePermissionGranted || webNotifPerm === 'granted' || clipboardPermGranted
+                      ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-300'
+                      : 'bg-amber-950/90 border-amber-500/50 text-amber-300'
+                  }`}
+                >
+                  {nativePermissionGranted
+                    ? '🟢 Escucha Nativa Android 24/7 Activa'
+                    : webNotifPerm === 'granted' || clipboardPermGranted
+                    ? '🟢 Permisos Web/Portapapeles Activos'
+                    : '🟡 Requiere Habilitar Permisos'}
+                </span>
+              </div>
               <p className="text-xs text-slate-400">
-                Detecta Nequi, Bancolombia, Daviplata, Nu y SMS y descuenta/suma de tu saldo al instante
+                Habilita aquí los permisos de tu Samsung Galaxy A36 5G para capturar compras de Nequi, Bancolombia, Daviplata, Nu y SMS
               </p>
             </div>
           </div>
@@ -464,23 +681,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               </span>
             </button>
 
-            {hasNativeAndroidBridge && (
-              <button
-                type="button"
-                onClick={() => window.AndroidNativeBridge?.openNotificationSettings?.()}
-                className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl transition ${
-                  nativePermissionGranted
-                    ? 'bg-emerald-950 border border-emerald-600 text-emerald-300'
-                    : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                }`}
-              >
-                <Settings className="w-4 h-4" />
-                {nativePermissionGranted
-                  ? 'Escucha Android Activa ✓'
-                  : 'Dar Permiso de Notificaciones Android'}
-              </button>
-            )}
-
             <label className="flex items-center gap-2 text-xs font-semibold bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer text-slate-200">
               <input
                 type="checkbox"
@@ -488,63 +688,111 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 onChange={(e) => setAutoSaveOnDetect(e.target.checked)}
                 className="accent-emerald-500"
               />
-              Auto-Guardar en Historial
+              Auto-Guardar Compras
             </label>
           </div>
         </div>
 
-        {/* Guía y Controles para Lectura 100% Automática sin copiar ni pegar */}
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+        {/* Botonera de Permisos SIEMPRE VISIBLE (Funciona tanto en APK como en Chrome Android) */}
+        <div className="bg-slate-950/95 border border-indigo-500/30 rounded-xl p-3.5 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs text-slate-200 font-semibold">
-              ⚡ ¿Cómo dejar activada la lectura 100% AUTOMÁTICA en tu Samsung A36 5G (sin tener que pegar nada)?
+            <div className="text-xs font-bold text-indigo-200 flex items-center gap-1.5">
+              <Settings className="w-4 h-4 text-indigo-400" />
+              <span>Panel de Activación de Permisos (Toca cada botón para dar permiso en tu celular):</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {hasNativeAndroidBridge && !nativePermissionGranted && (
-                <button
-                  type="button"
-                  onClick={() => window.AndroidNativeBridge?.openAppDetailsSettings?.()}
-                  className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition"
-                >
-                  Paso 1: Permitir Ajustes Restringidos
-                </button>
-              )}
+            <span className="text-[11px] text-slate-400">
+              Modo actual: {hasNativeAndroidBridge ? '📱 APK Nativo Android Detectado' : '🌐 App Web / PWA (o APK sin recargar)'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {/* Botón 1: Solicitar Permisos del Sistema (Notificaciones + SMS + Portapapeles) */}
+            <button
+              type="button"
+              onClick={handleRequestAllPermissions}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md"
+            >
+              <Bell className="w-4 h-4 shrink-0" />
+              <span>1. Solicitar Permisos Ahora</span>
+            </button>
+
+            {/* Botón 2: Abrir Ajustes de la App (Desbloquear Ajustes Restringidos Samsung) */}
+            <button
+              type="button"
+              onClick={handleOpenAppDetailsSettings}
+              className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md"
+            >
+              <Settings className="w-4 h-4 shrink-0" />
+              <span>2. Permitir Ajustes Restringidos</span>
+            </button>
+
+            {/* Botón 3: Abrir Acceso a Notificaciones de Android */}
+            <button
+              type="button"
+              onClick={handleOpenNotificationAccessSettings}
+              className={`text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md ${
+                nativePermissionGranted
+                  ? 'bg-emerald-900 border border-emerald-500 text-emerald-200'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>
+                {nativePermissionGranted
+                  ? '3. Acceso Android Activo ✓'
+                  : '3. Abrir Acceso a Notificaciones'}
+              </span>
+            </button>
+
+            {/* Botón 4: Escanear Notificaciones Actuales / Portapapeles Ahora */}
+            <button
+              type="button"
+              onClick={handleScanAllSourcesNow}
+              className="bg-slate-800 hover:bg-slate-700 border border-indigo-500/40 text-indigo-200 text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+            >
+              <RotateCcw className="w-4 h-4 shrink-0 text-indigo-400" />
+              <span>4. Escanear Notificaciones Ahora</span>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-[11px] text-slate-300">
+            <div>
+              💡 <strong>¿Por qué no leyó tu compra anterior?</strong> Si abriste el enlace web en Chrome sin haber instalado el nuevo APK (o sin encender el interruptor en el botón <strong>"3. Abrir Acceso a Notificaciones"</strong>), Android bloquea por seguridad la lectura de otras apps hasta que enciendas ese permiso.
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
                 onClick={handlePasteFromClipboard}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow"
+                className="bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition"
               >
                 <ClipboardPaste className="w-3.5 h-3.5" />
-                Pegar Manual
+                Pegar del Portapapeles
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  onSimulateIncomingNotif(
-                    'Bancolombia',
-                    'Bancolombia: Compra por $42.500 en SUPERMERCADO D1 con tu Tarjeta Débito.'
-                  );
+                onClick={async () => {
+                  try {
+                    await fetch('/api/webhook/notificacion', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        app: 'Bancolombia',
+                        texto: 'Bancolombia: Compraste $36.800,00 en SUPERMERCADO D1 con tu T.Deb *4829.',
+                      }),
+                    });
+                    await handleScanAllSourcesNow();
+                  } catch {
+                    onSimulateIncomingNotif(
+                      'Bancolombia',
+                      'Bancolombia: Compraste $36.800,00 en SUPERMERCADO D1 con tu T.Deb *4829.'
+                    );
+                  }
                 }}
-                className="bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
+                className="bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1 transition"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Probar Captura Automática
+                Probar Recepción Real
               </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-slate-300">
-            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
-              <strong className="text-emerald-400 block mb-0.5">1. Instalar el APK sin bloqueo</strong>
-              En <strong>Play Store → Perfil → Play Protect → ⚙️</strong> apaga <em>"Analizar apps con Play Protect"</em> por 10 segundos e instala el APK.
-            </div>
-            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
-              <strong className="text-amber-300 block mb-0.5">2. Desbloquear permiso en Samsung</strong>
-              Ve a <strong>Ajustes → Aplicaciones → Mis Finanzas → 3 puntos (⋮) arriba a la derecha → "Permitir ajustes restringidos"</strong>.
-            </div>
-            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
-              <strong className="text-indigo-300 block mb-0.5">3. Activar Acceso a Notificaciones</strong>
-              Activa a <strong>Mis Finanzas</strong> en <em>Acceso a notificaciones</em>. ¡Listo! Leerá Nequi, Bancolombia, Nu y SMS <strong>100% sola sin pegar nada</strong>.
             </div>
           </div>
         </div>
