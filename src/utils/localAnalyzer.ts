@@ -4,6 +4,9 @@ import {
   ExtractedCreditSummary,
   SourceType,
   AdvisorActionCommand,
+  NotificationCapturePolicy,
+  Transaction,
+  ProcessedNotificationRecord,
 } from '../types/finance';
 import { eaToMvPercent, simulateInstallmentPurchase } from './financeCalculations';
 
@@ -194,7 +197,306 @@ export function categorizeText(text: string, tipo: ExtractedTransactionItem['tip
 }
 
 /**
- * Analizador Real 100% Dinámico (CERO datos falsos o inventados).
+ * Extrae una descripción limpia del comercio o concepto de una notificación bancaria,
+ * eliminando ruido repetitivo como prefijos de SMS, montos duplicados o números de tarjeta.
+ */
+export function extractCleanMerchantDescription(line: string, entidad: string, tipo: ExtractedTransactionItem['tipo']): string {
+  const merchantMatch = line.match(
+    /\b(?:en|comercio|establecimiento|a\s+favor\s+de|para|de)\s+([A-ZÁÉÍÓÚÑ0-9][A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s.*&-]{2,42}?)(?=\s+(?:con\s+tu|por\s+\$|por\s+valor|el\s+\d|a\s+las|t\.deb|t\.cred|tarjeta|desde|exitosa|aprobada|saldo|$))/i
+  );
+  if (merchantMatch && merchantMatch[1]) {
+    const cleanMerchant = merchantMatch[1].replace(/\s+/g, ' ').trim();
+    if (cleanMerchant.length >= 2 && !/^\d+$/.test(cleanMerchant)) {
+      const actionPrefix =
+        tipo === 'ganancia' ? 'Abono / Ingreso' : tipo === 'deuda' ? 'Obligación' : 'Compra / Pago en';
+      return `${actionPrefix} ${cleanMerchant}`;
+    }
+  }
+
+  return (
+    line
+      .replace(/^\d+[.) -]+/, '')
+      .replace(/^(?:sms\s*\d*[:\s-]*|notificaci[oó]n[:\s-]*|gmail[:\s-]*)+/i, '')
+      .replace(/si no reconoce esta operacion.*/i, '')
+      .replace(/dudas al \d+.*/i, '')
+      .replace(/\s*\|\s*/g, ' • ')
+      .trim()
+      .slice(0, 90) || `Movimiento en ${entidad}`
+  );
+}
+
+/**
+ * Construye una huella semántica única para una compra/movimiento.
+ * Permite detectar cuando la MISMA compra genera notificación Push de la app + SMS + Correo.
+ */
+export function buildPurchaseFingerprint(
+  monto: number,
+  tipo: string,
+  textOrDesc: string,
+  entidad = ''
+): string {
+  const stopWords = new Set([
+    'compra', 'compraste', 'pagaste', 'pago', 'recibiste', 'transferencia', 'enviaste',
+    'aprobada', 'exitosa', 'exitoso', 'por', 'valor', 'de', 'del', 'en', 'el', 'la', 'los',
+    'con', 'tu', 'su', 'tarjeta', 'debito', 'credito', 'cuenta', 'ahorros', 'corriente',
+    'informa', 'le', 'te', 'banco', 'notificacion', 'sms', 'gmail', 'alerta', 'movimiento',
+    'transaccion', 'pesos', 'cop', 'saldo', 'disponible', 'hora', 'fecha', 'automatico'
+  ]);
+
+  const normalizedWords = `${textOrDesc} ${entidad}`
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b/g, ' ')
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !/^\d+$/.test(w) && !stopWords.has(w))
+    .slice(0, 4)
+    .sort()
+    .join('-');
+
+  return `${tipo}:${Math.round(monto)}:${normalizedWords || 'general'}`;
+}
+
+/**
+ * Calcula el timestamp mínimo (en milisegundos) permitido según la política de plazo elegida por el usuario.
+ */
+export function getPolicyCutoffTimestamp(policy: NotificationCapturePolicy): number {
+  if (!policy.ignorarNotificacionesAntiguas) return 0;
+
+  const now = Date.now();
+  switch (policy.modoPlazo) {
+    case 'desde_ahora':
+      return policy.timestampCorteMs || now;
+    case 'solo_hoy': {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      return startOfToday.getTime();
+    }
+    case 'fecha_personalizada': {
+      if (policy.desdeFechaISO) {
+        const parsed = new Date(policy.desdeFechaISO).getTime();
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+      return policy.timestampCorteMs || 0;
+    }
+    case 'ultimos_dias': {
+      const days = Math.max(1, policy.ultimosDias || 7);
+      return now - days * 24 * 60 * 60 * 1000;
+    }
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Extrae la fecha real escrita dentro del texto de una notificación (ej: "15/10/2026" o "2026-10-15")
+ * o usa el timestamp del evento Android si no hay fecha explícita en el texto.
+ */
+export function extractNotificationDateMs(text: string, fallbackTimestampMs = Date.now()): number {
+  const clean = (text || '').trim();
+
+  // Formato DD/MM/YYYY o DD-MM-YYYY (con hora opcional HH:MM)
+  const dmyMatch = clean.match(/\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2})\b(?:\s*(?:a\s+las\s+)?(\d{1,2}):(\d{2}))?/i);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    const hour = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 23;
+    const minute = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 59;
+    const dt = new Date(year, month, day, hour, minute, 59);
+    if (!isNaN(dt.getTime())) return dt.getTime();
+  }
+
+  // Formato YYYY-MM-DD
+  const ymdMatch = clean.match(/\b(20\d{2})[/-](\d{1,2})[/-](\d{1,2})\b(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (ymdMatch) {
+    const year = parseInt(ymdMatch[1], 10);
+    const month = parseInt(ymdMatch[2], 10) - 1;
+    const day = parseInt(ymdMatch[3], 10);
+    const hour = ymdMatch[4] ? parseInt(ymdMatch[4], 10) : 23;
+    const minute = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 59;
+    const dt = new Date(year, month, day, hour, minute, 59);
+    if (!isNaN(dt.getTime())) return dt.getTime();
+  }
+
+  return fallbackTimestampMs;
+}
+
+/**
+ * Verifica si una notificación es más antigua que el plazo/fecha configurado por el usuario.
+ */
+export function isNotificationOlderThanPolicy(
+  text: string,
+  eventTimestampMs: number,
+  policy: NotificationCapturePolicy
+): { isOld: boolean; reason?: string } {
+  if (!policy.ignorarNotificacionesAntiguas) {
+    return { isOld: false };
+  }
+
+  const cutoffMs = getPolicyCutoffTimestamp(policy);
+  if (cutoffMs <= 0) return { isOld: false };
+
+  // Margen de gracia de 90 segundos para evitar bloqueos por diferencias de segundos en "desde_ahora"
+  const effectiveCutoff = policy.modoPlazo === 'desde_ahora' ? cutoffMs - 90 * 1000 : cutoffMs;
+
+  // 1. Validar timestamp del evento (por ejemplo StatusBarNotification.getPostTime() en Android)
+  if (eventTimestampMs > 0 && eventTimestampMs < effectiveCutoff) {
+    const cutoffStr = new Date(cutoffMs).toLocaleString('es-CO', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return {
+      isOld: true,
+      reason: `Notificación anterior a tu fecha límite (${cutoffStr})`,
+    };
+  }
+
+  // 2. Validar si el texto de la notificación menciona explícitamente una fecha antigua
+  const textDateMs = extractNotificationDateMs(text, eventTimestampMs);
+  if (textDateMs < effectiveCutoff) {
+    const cutoffStr = new Date(cutoffMs).toLocaleDateString('es-CO', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+    return {
+      isOld: true,
+      reason: `La fecha dentro de la notificación es anterior al plazo configurado (${cutoffStr})`,
+    };
+  }
+
+  return { isOld: false };
+}
+
+/**
+ * Determina si un movimiento extraído de una notificación corresponde a una COMPRA YA REGISTRADA
+ * (por ejemplo, cuando llega primero la notificación Push de Bancolombia/Nequi, luego el SMS y luego el correo,
+ * o cuando el lector de barra de estado vuelve a leer la misma notificación).
+ */
+export function isDuplicatePurchase(
+  candidate: {
+    monto: number;
+    tipo: string;
+    categoria: string;
+    entidad: string;
+    desc: string;
+    rawText: string;
+    timestamp: number;
+  },
+  existingTransactions: Transaction[],
+  existingHistory: ProcessedNotificationRecord[],
+  windowMinutes = 60
+): { isDuplicate: boolean; reason?: string } {
+  const windowMs = Math.max(5, windowMinutes) * 60 * 1000;
+  const candFp = buildPurchaseFingerprint(candidate.monto, candidate.tipo, `${candidate.desc} ${candidate.rawText}`, candidate.entidad);
+  const candNormText = candidate.rawText
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // 1. Revisar historial de notificaciones procesadas
+  for (const h of existingHistory) {
+    const timeDiff = Math.abs(candidate.timestamp - h.timestamp);
+    const histNormText = (h.textoOriginal || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // Si es exactamente el mismo texto de notificación dentro de los últimos 7 días, bloquear siempre
+    if (candNormText.length > 10 && candNormText === histNormText && timeDiff < 7 * 24 * 60 * 60 * 1000) {
+      return {
+        isDuplicate: true,
+        reason: 'Esta notificación exacta ya fue procesada anteriormente',
+      };
+    }
+
+    // Si tiene el mismo monto y mismo tipo dentro de la ventana anti-duplicados
+    if (Math.round(h.montoTotal) === Math.round(candidate.monto) && h.tipoPrincipal === candidate.tipo && timeDiff <= windowMs) {
+      return {
+        isDuplicate: true,
+        reason: `Misma compra por $${candidate.monto.toLocaleString('es-CO')} ya registrada hace ${Math.max(1, Math.round(timeDiff / 60000))} min`,
+      };
+    }
+  }
+
+  // 2. Revisar lista de transacciones financieras
+  for (const tx of existingTransactions) {
+    if (Math.round(tx.monto) !== Math.round(candidate.monto) || tx.tipo !== candidate.tipo) {
+      continue;
+    }
+
+    const timeDiff = Math.abs(candidate.timestamp - tx.timestamp);
+    const txFp = tx.fingerprint || buildPurchaseFingerprint(tx.monto, tx.tipo, tx.desc, tx.entidad);
+
+    // Huella idéntica en las últimas 12 horas (ej: misma compra en D1 por $42.500 notificada horas después)
+    if (txFp === candFp && timeDiff <= 12 * 60 * 60 * 1000) {
+      return {
+        isDuplicate: true,
+        reason: `Compra idéntica ($${candidate.monto.toLocaleString('es-CO')}) ya anotada en tus movimientos`,
+      };
+    }
+
+    // Mismo monto y tipo dentro de la ventana anti-duplicados (ej: llega Push de Nequi/Bancolombia y luego SMS/Correo por el mismo valor)
+    if (timeDiff <= windowMs) {
+      const sameCategoryOrBank =
+        tx.categoria === candidate.categoria ||
+        (tx.entidad && candidate.entidad && tx.entidad.toLowerCase() === candidate.entidad.toLowerCase()) ||
+        timeDiff <= 20 * 60 * 1000; // Dentro de 20 minutos igual monto + igual tipo entre Push/SMS/Correo es la misma compra
+
+      if (sameCategoryOrBank) {
+        return {
+          isDuplicate: true,
+          reason: `Compra duplicada detectada ($${candidate.monto.toLocaleString('es-CO')}) dentro de la ventana de protección`,
+        };
+      }
+    }
+  }
+
+  return { isDuplicate: false };
+}
+
+/**
+ * Limpia transacciones duplicadas existentes en el listado (conservando solo el primer registro único de cada compra).
+ */
+export function deduplicateTransactionsList(
+  transactions: Transaction[],
+  windowMinutes = 60
+): { cleaned: Transaction[]; removedCount: number } {
+  const windowMs = Math.max(10, windowMinutes) * 60 * 1000;
+  // Ordenar de más antigua a más reciente para conservar la original y descartar las réplicas posteriores
+  const chronological = [...transactions].sort((a, b) => a.timestamp - b.timestamp);
+  const kept: Transaction[] = [];
+  let removedCount = 0;
+
+  for (const tx of chronological) {
+    const txFp = tx.fingerprint || buildPurchaseFingerprint(tx.monto, tx.tipo, tx.desc, tx.entidad);
+    const isDup = kept.some((existing) => {
+      if (Math.round(existing.monto) !== Math.round(tx.monto) || existing.tipo !== tx.tipo) return false;
+      const timeDiff = Math.abs(tx.timestamp - existing.timestamp);
+      const exFp = existing.fingerprint || buildPurchaseFingerprint(existing.monto, existing.tipo, existing.desc, existing.entidad);
+      if (txFp === exFp && timeDiff <= 12 * 60 * 60 * 1000) return true;
+      if (timeDiff <= windowMs && (existing.categoria === tx.categoria || timeDiff <= 20 * 60 * 1000)) return true;
+      return false;
+    });
+
+    if (isDup) {
+      removedCount++;
+    } else {
+      kept.push({ ...tx, fingerprint: txFp });
+    }
+  }
+
+  // Devolver en orden descendente (más reciente primero)
+  return {
+    cleaned: kept.sort((a, b) => b.timestamp - a.timestamp),
+    removedCount,
+  };
+}
+
+/**
+ * Analizador Real 100% Dinámico (CERO datos falsos o inventados y CERO duplicación de la misma compra).
  * Extrae todos los valores reales presentes en notificaciones de Nequi, Bancolombia, Daviplata, Nu, SMS, correos o PDF.
  */
 export function runOnDeviceFinancialAnalysis(params: {
@@ -214,25 +516,41 @@ export function runOnDeviceFinancialAnalysis(params: {
   const movimientosDetectados: ExtractedTransactionItem[] = [];
   let datosExtractoCredito: ExtractedCreditSummary | undefined = undefined;
 
-  // Dividir por líneas o por punto y coma
-  const rawLines = rawText
+  // Limpiar frases informativas de "saldo disponible" o "costo de transacción $0" para no confundirlas con otra compra
+  const cleanedNotificationText = rawText
+    .replace(/(?:tu\s+)?(?:nuevo\s+)?saldo(?:\s+disponible|\s+actual|\s+total|\s+en\s+cuenta)?\s*(?:es\s*(?:de)?)?[:\s]*\$?\s*(?:cop\s*)?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?/gi, ' ')
+    .replace(/en\s+tu\s+cuenta\s+queda\s*[:\s]*\$?\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?/gi, ' ')
+    .replace(/costo\s+(?:de\s+(?:la\s+)?)?transacci[oó]n[:\s]*\$?\s*\d+(?:[.,]\d+)?/gi, ' ');
+
+  const rawLines = cleanedNotificationText
     .split(/\r?\n|;\s+/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
-  // Si es una notificación de varias líneas donde solo 1 línea tiene monto en $, unir las líneas para no perder el comercio ni el banco
+  // Detectar si el usuario pegó una lista numerada explícita (ej. "1. Mercado $50.000 \n 2. Gasolina $30.000")
+  const isExplicitNumberedList =
+    rawLines.length > 1 && rawLines.filter((l) => /^\d+[.) -]+/.test(l)).length >= 2;
+
+  // Si es una notificación bancaria ('notificacion' o 'automatico') y NO es una lista numerada manual,
+  // SIEMPRE consolidarla como UN SOLO evento para no duplicar cuando el título y el cuerpo repiten el monto
+  const isSingleNotificationEvent =
+    (params.sourceType === 'notificacion' || params.sourceType === 'automatico') && !isExplicitNumberedList;
+
   const linesWithAmounts = rawLines.filter((l) => parseAllNumbersFromText(l).length > 0);
   const lines =
-    linesWithAmounts.length === 1 && rawLines.length > 1
+    isSingleNotificationEvent || (linesWithAmounts.length === 1 && rawLines.length > 1)
       ? [rawLines.join(' ')]
       : rawLines;
+
+  const seenInThisAnalysis = new Set<string>();
 
   for (const line of lines) {
     const lineLow = line.toLowerCase();
     if (
       lineLow.startsWith('cupo total') ||
       lineLow.startsWith('fecha de corte') ||
-      lineLow.startsWith('tasa efectiva')
+      lineLow.startsWith('tasa efectiva') ||
+      lineLow.startsWith('saldo disponible')
     ) {
       continue;
     }
@@ -277,22 +595,27 @@ export function runOnDeviceFinancialAnalysis(params: {
     const lineCuotas = lineCuotasMatch ? parseInt(lineCuotasMatch[1], 10) : cuotasGlobal;
     const lineEntidad = detectBankOrEntity(line, entidadGlobal);
 
-    const cleanDesc = line
-      .replace(/^\d+[.) -]+/, '')
-      .replace(/si no reconoce esta operacion.*/i, '')
-      .replace(/dudas al \d+.*/i, '')
-      .trim()
-      .slice(0, 95);
+    const cleanDesc = extractCleanMerchantDescription(line, lineEntidad, tipo);
+    const dedupKey = `${tipo}:${monto}:${categoria}`;
+    if (seenInThisAnalysis.has(dedupKey)) {
+      continue;
+    }
+    seenInThisAnalysis.add(dedupKey);
 
     movimientosDetectados.push({
       tipo,
       categoria,
       monto,
-      desc: cleanDesc || `Movimiento en ${lineEntidad}`,
+      desc: cleanDesc,
       entidad: lineEntidad,
       cuotas: lineCuotas,
       esEsencial,
     });
+
+    // Si es una notificación unitaria, tomar únicamente la compra principal
+    if (isSingleNotificationEvent) {
+      break;
+    }
   }
 
   // Verificar si el texto contiene métricas explícitas de extracto crediticio

@@ -44,7 +44,7 @@ jobs:
           JAVA_DIR="android/app/src/main/java/com/misfinanzas/personal/a36"
           mkdir -p "$JAVA_DIR"
 
-          # 1. Servicio Nativo Android de Lectura 100% Automática de Notificaciones (incluyendo notificaciones agrupadas One UI Samsung)
+          # 1. Servicio Nativo Android de Lectura 100% Automática de Notificaciones (con Filtro de Fecha y Anti-Duplicados)
           cat << 'EOF' > "$JAVA_DIR/BankNotificationListener.java"
           package com.misfinanzas.personal.a36;
 
@@ -56,10 +56,6 @@ jobs:
           import android.service.notification.StatusBarNotification;
           import org.json.JSONArray;
           import org.json.JSONObject;
-          import java.io.OutputStream;
-          import java.net.HttpURLConnection;
-          import java.net.URL;
-          import java.nio.charset.StandardCharsets;
 
           public class BankNotificationListener extends NotificationListenerService {
               public static BankNotificationListener instance;
@@ -68,6 +64,11 @@ jobs:
               public void onListenerConnected() {
                   super.onListenerConnected();
                   instance = this;
+                  // Inicializar fecha mínima de captura al momento de instalar/conectar por primera vez
+                  SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                  if (!prefs.contains("min_capture_time")) {
+                      prefs.edit().putLong("min_capture_time", System.currentTimeMillis() - 120000L).apply();
+                  }
                   scanAllActiveNotifications();
               }
 
@@ -99,9 +100,18 @@ jobs:
                       if (sbn == null || sbn.getNotification() == null) return;
                       Notification notif = sbn.getNotification();
                       if ((notif.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+                      if ((notif.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
 
                       String pkg = sbn.getPackageName() != null ? sbn.getPackageName() : "";
                       if (pkg.equals(getPackageName()) || pkg.contains("systemui") || pkg.contains("android.providers.downloads")) return;
+
+                      // Verificar que la notificación no sea más antigua que el plazo configurado por el usuario
+                      long postTime = sbn.getPostTime() > 0 ? sbn.getPostTime() : System.currentTimeMillis();
+                      SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                      long minCaptureTime = prefs.getLong("min_capture_time", 0L);
+                      if (minCaptureTime > 0L && postTime < (minCaptureTime - 90000L)) {
+                          return;
+                      }
 
                       Bundle extras = notif.extras;
                       if (extras == null) return;
@@ -111,8 +121,6 @@ jobs:
                       CharSequence textCs = extras.getCharSequence(Notification.EXTRA_TEXT);
                       CharSequence bigTextCs = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
                       CharSequence subTextCs = extras.getCharSequence(Notification.EXTRA_SUB_TEXT);
-                      CharSequence summaryCs = extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT);
-                      CharSequence[] textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
 
                       String title = bigTitleCs != null ? bigTitleCs.toString() : (titleCs != null ? titleCs.toString() : "");
                       StringBuilder bodyBuilder = new StringBuilder();
@@ -121,19 +129,8 @@ jobs:
                       } else if (textCs != null && textCs.length() > 0) {
                           bodyBuilder.append(textCs.toString());
                       }
-                      if (textLines != null && textLines.length > 0) {
-                          for (CharSequence line : textLines) {
-                              if (line != null && line.length() > 0) {
-                                  if (bodyBuilder.length() > 0) bodyBuilder.append(" | ");
-                                  bodyBuilder.append(line.toString());
-                              }
-                          }
-                      }
                       if (subTextCs != null && subTextCs.length() > 0) {
                           bodyBuilder.append(" ").append(subTextCs.toString());
-                      }
-                      if (summaryCs != null && summaryCs.length() > 0) {
-                          bodyBuilder.append(" ").append(summaryCs.toString());
                       }
                       if (bodyBuilder.length() == 0 && notif.tickerText != null) {
                           bodyBuilder.append(notif.tickerText.toString());
@@ -156,26 +153,41 @@ jobs:
                           low.contains("aprobada") || low.contains("exitosa") || low.contains("consumo") ||
                           low.contains("debito") || low.contains("débito") || low.contains("credito") ||
                           low.contains("crédito") || low.contains("transaccion") || low.contains("transacción") ||
-                          low.contains("cuota") || low.contains("saldo") || low.contains("pse") ||
-                          low.contains("transfiya") || low.contains("rappi") || low.contains("mercadopago");
+                          low.contains("cuota") || low.contains("pse") || low.contains("transfiya") ||
+                          low.contains("rappi") || low.contains("mercadopago");
 
                       if (isFinancial) {
-                          saveAndBroadcastNotification(this, title.isEmpty() ? pkg : title, fullText);
+                          saveAndBroadcastNotification(this, title.isEmpty() ? pkg : title, fullText, postTime);
                       }
                   } catch (Exception ignored) {
                   }
               }
 
-              public static synchronized void saveAndBroadcastNotification(Context ctx, String appName, String fullText) {
+              public static synchronized void saveAndBroadcastNotification(Context ctx, String appName, String fullText, long notifTime) {
                   try {
                       SharedPreferences prefs = ctx.getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
-                      String lastText = prefs.getString("last_text", "");
-                      long lastTime = prefs.getLong("last_time", 0L);
-                      long now = System.currentTimeMillis();
-
-                      // Evitar duplicados exactos en menos de 4 segundos
-                      if (fullText.equals(lastText) && (now - lastTime) < 4000L) {
+                      long minCaptureTime = prefs.getLong("min_capture_time", 0L);
+                      if (minCaptureTime > 0L && notifTime < (minCaptureTime - 90000L)) {
                           return;
+                      }
+
+                      // Registro persistente de las últimas 60 notificaciones vistas para no volver a procesarlas nunca
+                      String normalizedHash = String.valueOf(fullText.toLowerCase().replaceAll("\\s+", " ").trim().hashCode());
+                      String seenHashesJson = prefs.getString("seen_hashes", "[]");
+                      JSONArray seenArr = new JSONArray(seenHashesJson);
+                      for (int i = 0; i < seenArr.length(); i++) {
+                          if (normalizedHash.equals(seenArr.optString(i))) {
+                              return; // Ya fue capturada antes, ignorar duplicado
+                          }
+                      }
+
+                      seenArr.put(normalizedHash);
+                      if (seenArr.length() > 60) {
+                          JSONArray trimmed = new JSONArray();
+                          for (int i = seenArr.length() - 60; i < seenArr.length(); i++) {
+                              trimmed.put(seenArr.optString(i));
+                          }
+                          seenArr = trimmed;
                       }
 
                       String currentJson = prefs.getString("queue", "[]");
@@ -184,47 +196,17 @@ jobs:
                       JSONObject item = new JSONObject();
                       item.put("app", appName);
                       item.put("text", fullText);
-                      item.put("time", now);
+                      item.put("time", notifTime);
                       arr.put(item);
 
                       prefs.edit()
                           .putString("queue", arr.toString())
-                          .putString("last_text", fullText)
-                          .putLong("last_time", now)
+                          .putString("seen_hashes", seenArr.toString())
                           .apply();
 
                       if (MainActivity.instance != null) {
                           MainActivity.instance.pushPendingToWebView();
                       }
-
-                      // También sincronizar con el receptor en la nube para que aparezca si abre la PWA/Web
-                      new Thread(() -> {
-                          String[] urls = new String[]{
-                              "https://ais-pre-4s6kjtsko5cj52axuli7l3-147664983550.us-west2.run.app/api/webhook/notificacion",
-                              "https://ais-dev-4s6kjtsko5cj52axuli7l3-147664983550.us-west2.run.app/api/webhook/notificacion"
-                          };
-                          for (String u : urls) {
-                              try {
-                                  URL url = new URL(u);
-                                  HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                                  conn.setRequestMethod("POST");
-                                  conn.setConnectTimeout(5000);
-                                  conn.setReadTimeout(5000);
-                                  conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                                  conn.setDoOutput(true);
-                                  JSONObject payload = new JSONObject();
-                                  payload.put("app", appName);
-                                  payload.put("texto", fullText);
-                                  byte[] out = payload.toString().getBytes(StandardCharsets.UTF_8);
-                                  try (OutputStream os = conn.getOutputStream()) {
-                                      os.write(out);
-                                  }
-                                  conn.getResponseCode();
-                                  conn.disconnect();
-                              } catch (Exception ignored) {
-                              }
-                          }
-                      }).start();
                   } catch (Exception ignored) {
                   }
               }
@@ -254,6 +236,7 @@ jobs:
 
                       StringBuilder fullSms = new StringBuilder();
                       String sender = "SMS Banco";
+                      long msgTime = System.currentTimeMillis();
                       for (Object pdu : pdus) {
                           SmsMessage msg = format != null
                               ? SmsMessage.createFromPdu((byte[]) pdu, format)
@@ -262,6 +245,9 @@ jobs:
                               if (msg.getOriginatingAddress() != null) {
                                   sender = "SMS " + msg.getOriginatingAddress();
                               }
+                              if (msg.getTimestampMillis() > 0) {
+                                  msgTime = msg.getTimestampMillis();
+                              }
                               if (msg.getMessageBody() != null) {
                                   fullSms.append(msg.getMessageBody());
                               }
@@ -269,7 +255,7 @@ jobs:
                       }
                       String body = fullSms.toString().trim();
                       if (!body.isEmpty()) {
-                          BankNotificationListener.saveAndBroadcastNotification(context, sender, body);
+                          BankNotificationListener.saveAndBroadcastNotification(context, sender, body, msgTime);
                       }
                   } catch (Exception ignored) {
                   }
@@ -476,6 +462,12 @@ jobs:
                   public void clearCapturedNotifications() {
                       SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
                       prefs.edit().putString("queue", "[]").apply();
+                  }
+
+                  @JavascriptInterface
+                  public void setMinCaptureTimestamp(long timestampMs) {
+                      SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
+                      prefs.edit().putLong("min_capture_time", timestampMs).apply();
                   }
               }
           }

@@ -22,6 +22,10 @@ import {
   Filter,
   Clock,
   RotateCcw,
+  ShieldCheck,
+  Calendar,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   AIAnalysisResult,
@@ -30,6 +34,8 @@ import {
   CreditObligation,
   ExtractedTransactionItem,
   ProcessedNotificationRecord,
+  NotificationCapturePolicy,
+  CaptureTimeframeMode,
 } from '../types/finance';
 import { formatCurrency, CurrencyCode } from '../utils/financeCalculations';
 import {
@@ -37,6 +43,10 @@ import {
   inspectImageLocally,
   runOnDeviceFinancialAnalysis,
   parseAllNumbersFromText,
+  isNotificationOlderThanPolicy,
+  isDuplicatePurchase,
+  getPolicyCutoffTimestamp,
+  buildPurchaseFingerprint,
 } from '../utils/localAnalyzer';
 import { callBackendApi } from '../utils/apiClient';
 
@@ -53,6 +63,12 @@ interface ScannerCenterProps {
   onRecordProcessedNotification: (record: Omit<ProcessedNotificationRecord, 'id' | 'timestamp' | 'fechaStr'>) => void;
   onDeleteProcessedRecord: (id: string) => void;
   onClearProcessedHistory: () => void;
+  capturePolicy: NotificationCapturePolicy;
+  onUpdateCapturePolicy: (policy: NotificationCapturePolicy) => void;
+  existingTransactions: Transaction[];
+  blockedDuplicatesCount: number;
+  blockedOldCount: number;
+  onCleanDuplicatesNow: () => void;
 }
 
 declare global {
@@ -67,6 +83,7 @@ declare global {
       isNotificationListenerEnabled?: () => boolean;
       getCapturedNotificationsJson?: () => string;
       clearCapturedNotifications?: () => void;
+      setMinCaptureTimestamp?: (timestampMs: number) => void;
     };
   }
 }
@@ -82,6 +99,12 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
   onRecordProcessedNotification,
   onDeleteProcessedRecord,
   onClearProcessedHistory,
+  capturePolicy,
+  onUpdateCapturePolicy,
+  existingTransactions,
+  blockedDuplicatesCount,
+  blockedOldCount,
+  onCleanDuplicatesNow,
 }) => {
   const [activeMode, setActiveMode] = useState<SourceType>('notificacion');
   const [inputText, setInputText] = useState('');
@@ -92,6 +115,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AIAnalysisResult | null>(null);
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
+  const [warningBanner, setWarningBanner] = useState<string | null>(null);
   const [autoSaveOnDetect, setAutoSaveOnDetect] = useState<boolean>(true);
   const [autoClipboardEnabled] = useState<boolean>(true);
   const [hasNativeAndroidBridge, setHasNativeAndroidBridge] = useState<boolean>(false);
@@ -100,6 +124,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
   const [clipboardPermGranted, setClipboardPermGranted] = useState<boolean>(false);
+  const [showPermissionsPanel, setShowPermissionsPanel] = useState<boolean>(false);
 
   // Estado del Modal de Historial de los últimos 30 días
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
@@ -139,6 +164,16 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     };
   }, []);
 
+  // Sincronizar fecha límite con el puente nativo Android cada vez que cambie la política
+  useEffect(() => {
+    const cutoff = getPolicyCutoffTimestamp(capturePolicy);
+    try {
+      window.AndroidNativeBridge?.setMinCaptureTimestamp?.(cutoff);
+    } catch {
+      // ignore
+    }
+  }, [capturePolicy]);
+
   // Filtrar registros de los últimos 30 días
   const recent30DaysHistory = useMemo(() => {
     const cutoff = Date.now() - THIRTY_DAYS_MS;
@@ -147,7 +182,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       .sort((a, b) => b.timestamp - a.timestamp);
   }, [processedHistory]);
 
-  // Bancos / entidades únicas presentes en el historial de 30 días para el filtro
   const availableBanksInHistory = useMemo(() => {
     const set = new Set<string>();
     recent30DaysHistory.forEach((h) => {
@@ -156,7 +190,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     return Array.from(set);
   }, [recent30DaysHistory]);
 
-  // Lista filtrada según búsqueda, tipo, banco y rango de días (Hoy, 7 días, 30 días)
   const filteredHistoryRecords = useMemo(() => {
     const now = Date.now();
     const maxAgeMs = historyDaysFilter * 24 * 60 * 60 * 1000;
@@ -174,7 +207,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     });
   }, [recent30DaysHistory, historySearch, historyTypeFilter, historyBankFilter, historyDaysFilter]);
 
-  // Totales del historial filtrado
   const historySummary = useMemo(() => {
     let gastos = 0;
     let ingresos = 0;
@@ -185,10 +217,65 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     return { gastos, ingresos, count: filteredHistoryRecords.length };
   }, [filteredHistoryRecords]);
 
-  const recordSuccessfulScan = (res: AIAnalysisResult, rawText: string, source: SourceType) => {
-    if (!res || (res.movimientosDetectados.length === 0 && !res.datosExtractoCredito)) return;
-    const firstMov = res.movimientosDetectados[0];
-    const total = res.movimientosDetectados.reduce((acc, m) => acc + m.monto, 0) || res.datosExtractoCredito?.saldoActual || 0;
+  // Valida plazo y anti-duplicados antes de guardar movimientos extraídos
+  const validateAndSaveExtractedResult = (
+    res: AIAnalysisResult,
+    rawText: string,
+    source: SourceType,
+    eventTimestampMs = Date.now()
+  ): { savedCount: number; blockedReason?: string } => {
+    setWarningBanner(null);
+
+    if (!res || (res.movimientosDetectados.length === 0 && !res.datosExtractoCredito)) {
+      return { savedCount: 0 };
+    }
+
+    // 1. Validar si la notificación es más antigua que la fecha/plazo configurado por el usuario
+    if (capturePolicy.ignorarNotificacionesAntiguas && (source === 'notificacion' || source === 'automatico')) {
+      const oldCheck = isNotificationOlderThanPolicy(rawText, eventTimestampMs, capturePolicy);
+      if (oldCheck.isOld) {
+        setWarningBanner(`⏳ Ignorada por antigüedad: ${oldCheck.reason}. No se sumó a tus gastos.`);
+        return { savedCount: 0, blockedReason: oldCheck.reason };
+      }
+    }
+
+    // 2. Filtrar movimientos que ya hayan sido registrados por otra notificación de la misma compra
+    const uniqueMovements: ExtractedTransactionItem[] = [];
+    let duplicateReason = '';
+
+    for (const item of res.movimientosDetectados) {
+      if (capturePolicy.evitarDuplicadosMismaCompra) {
+        const dupCheck = isDuplicatePurchase(
+          {
+            monto: item.monto,
+            tipo: item.tipo,
+            categoria: item.categoria,
+            entidad: item.entidad,
+            desc: item.desc,
+            rawText,
+            timestamp: eventTimestampMs,
+          },
+          existingTransactions,
+          processedHistory,
+          capturePolicy.ventanaAntiduplicadosMinutos
+        );
+        if (dupCheck.isDuplicate) {
+          duplicateReason = dupCheck.reason || 'Compra ya registrada anteriormente';
+          continue;
+        }
+      }
+      uniqueMovements.push(item);
+    }
+
+    if (res.movimientosDetectados.length > 0 && uniqueMovements.length === 0) {
+      setWarningBanner(`🛡️ Compra repetida bloqueada: ${duplicateReason}. No se volvió a descontar.`);
+      return { savedCount: 0, blockedReason: duplicateReason };
+    }
+
+    // 3. Registrar en el historial de 30 días y en transacciones
+    const firstMov = uniqueMovements[0];
+    const total =
+      uniqueMovements.reduce((acc, m) => acc + m.monto, 0) || res.datosExtractoCredito?.saldoActual || 0;
 
     onRecordProcessedNotification({
       fuente: source,
@@ -198,27 +285,33 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       montoTotal: total,
       tipoPrincipal: firstMov?.tipo || 'gasto',
       categoriaPrincipal: firstMov?.categoria || 'Otros',
-      itemsCount: Math.max(1, res.movimientosDetectados.length),
+      itemsCount: Math.max(1, uniqueMovements.length),
+      fingerprint: firstMov
+        ? buildPurchaseFingerprint(firstMov.monto, firstMov.tipo, `${firstMov.desc} ${rawText}`, firstMov.entidad)
+        : undefined,
     });
+
+    if (autoSaveOnDetect && uniqueMovements.length > 0) {
+      onAddTransactions(
+        uniqueMovements.map((item) => ({
+          tipo: item.tipo,
+          categoria: item.categoria,
+          monto: item.monto,
+          desc: item.desc,
+          entidad: item.entidad,
+          cuotas: item.cuotas || 1,
+          fuente: source,
+          esEsencial: item.esEsencial ?? false,
+          fingerprint: buildPurchaseFingerprint(item.monto, item.tipo, `${item.desc} ${rawText}`, item.entidad),
+        }))
+      );
+      return { savedCount: uniqueMovements.length };
+    }
+
+    return { savedCount: 0 };
   };
 
-  const saveDetectedMovementsAutomatically = (res: AIAnalysisResult, source: SourceType) => {
-    if (!res || res.movimientosDetectados.length === 0) return false;
-    const toAdd = res.movimientosDetectados.map((item: ExtractedTransactionItem) => ({
-      tipo: item.tipo,
-      categoria: item.categoria,
-      monto: item.monto,
-      desc: item.desc,
-      entidad: item.entidad,
-      cuotas: item.cuotas || 1,
-      fuente: source,
-      esEsencial: item.esEsencial ?? false,
-    }));
-    onAddTransactions(toAdd);
-    return true;
-  };
-
-  // Auto-lectura de notificación copiada al abrir o volver a la aplicación
+  // Auto-lectura de notificación copiada al abrir o tocar la aplicación (con filtro de fecha y anti-duplicados)
   useEffect(() => {
     if (!autoClipboardEnabled) return;
     const handleVisibilityOrFocus = async () => {
@@ -231,7 +324,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           clip.length >= 10 &&
           clip.length <= 1500 &&
           parseAllNumbersFromText(clip).length > 0 &&
-          /\$|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
+          /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
         ) {
           lastClipboardRef.current = clip;
           setInputText(clip);
@@ -242,26 +335,22 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           });
           setAnalysisResult(res);
           if (res.movimientosDetectados.length > 0) {
-            recordSuccessfulScan(res, clip, 'notificacion');
-            if (autoSaveOnDetect) {
-              saveDetectedMovementsAutomatically(res, 'notificacion');
+            const outcome = validateAndSaveExtractedResult(res, clip, 'notificacion', Date.now());
+            if (outcome.savedCount > 0) {
               setSavedBanner(
-                `📲 ¡Notificación detectada de tu portapapeles y guardada automáticamente! (${formatCurrency(
+                `📲 Compra detectada y registrada (${formatCurrency(
                   res.movimientosDetectados[0].monto,
                   currency
                 )})`
               );
-            } else {
-              setSavedBanner('📲 ¡Notificación bancaria detectada automáticamente de tu portapapeles!');
             }
           }
         }
       } catch {
-        // El navegador puede requerir toque manual si no tiene foco
+        // Requiere gesto táctil en Android Chrome
       }
     };
 
-    // En Android Chrome/WebView, leer el portapapeles requiere un gesto táctil (pointerdown/click) además de focus
     const handleFirstTouchAfterFocus = () => {
       handleVisibilityOrFocus();
     };
@@ -274,41 +363,37 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('pointerdown', handleFirstTouchAfterFocus);
     };
-  }, [autoClipboardEnabled, autoSaveOnDetect, currency]);
+  }, [autoClipboardEnabled, autoSaveOnDetect, currency, capturePolicy, existingTransactions, processedHistory]);
 
-  // Solicitar TODOS los permisos (Android Runtime + Notificaciones Web + Portapapeles + Escaneo en vivo)
   const handleRequestAllPermissions = async () => {
-    let statusMessages: string[] = [];
+    const statusMessages: string[] = [];
 
-    // 1. Si está en el APK nativo, disparar solicitud de permisos Android (POST_NOTIFICATIONS, SMS y Diálogo de Acceso a Notificaciones)
     if (window.AndroidNativeBridge?.requestAllRuntimePermissions) {
       try {
         window.AndroidNativeBridge.requestAllRuntimePermissions();
-        statusMessages.push('Diálogo nativo de Android abierto');
+        statusMessages.push('Diálogo Android abierto');
       } catch {
         // ignore
       }
     }
 
-    // 2. Pedir permiso de Notificaciones del navegador / PWA
     if (typeof Notification !== 'undefined' && Notification.requestPermission) {
       try {
         const perm = await Notification.requestPermission();
         setWebNotifPerm(perm);
         if (perm === 'granted') {
-          statusMessages.push('Permiso de notificaciones concedido ✓');
+          statusMessages.push('Notificaciones concedidas ✓');
         }
       } catch {
         // ignore
       }
     }
 
-    // 3. Pedir permiso de lectura de portapapeles dentro del gesto del usuario y analizar si hay una notificación bancaria
     if (navigator.clipboard?.readText) {
       try {
         const clip = (await navigator.clipboard.readText())?.trim();
         setClipboardPermGranted(true);
-        statusMessages.push('Lectura automática de portapapeles activa ✓');
+        statusMessages.push('Portapapeles activo ✓');
         if (
           clip &&
           clip.length >= 8 &&
@@ -316,23 +401,13 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
         ) {
           lastClipboardRef.current = clip;
-          setInputText(clip);
-          const res = runOnDeviceFinancialAnalysis({ sourceType: 'notificacion', text: clip });
-          setAnalysisResult(res);
-          if (res.movimientosDetectados.length > 0) {
-            recordSuccessfulScan(res, clip, 'notificacion');
-            if (autoSaveOnDetect) {
-              saveDetectedMovementsAutomatically(res, 'notificacion');
-              statusMessages.push(`¡Se detectó y guardó compra por ${formatCurrency(res.movimientosDetectados[0].monto, currency)}!`);
-            }
-          }
+          onSimulateIncomingNotif('Portapapeles', clip);
         }
       } catch {
         // ignore
       }
     }
 
-    // 4. Escanear notificaciones activas en la barra de estado si el puente Android está activo
     if (window.AndroidNativeBridge?.scanActiveNotificationsNow) {
       try {
         window.AndroidNativeBridge.scanActiveNotificationsNow();
@@ -344,19 +419,16 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     setSavedBanner(
       statusMessages.length > 0
         ? `🔔 Permisos verificados: ${statusMessages.join(' • ')}`
-        : '🔔 Solicitud de permisos enviada. Si usas Samsung A36, toca también "Abrir Acceso a Notificaciones de Android".'
+        : '🔔 Solicitud enviada. Activa también "3. Abrir Acceso a Notificaciones".'
     );
   };
 
-  // Abrir pantalla de Ajustes de la App en Samsung A36 (para permitir Ajustes Restringidos)
   const handleOpenAppDetailsSettings = () => {
     if (window.AndroidNativeBridge?.openAppDetailsSettings) {
       window.AndroidNativeBridge.openAppDetailsSettings();
       return;
     }
-    // En Chrome Android / WebView, abrir directamente la pantalla de información de la app o ajustes de aplicaciones
-    const isAndroid = /android/i.test(navigator.userAgent);
-    if (isAndroid) {
+    if (/android/i.test(navigator.userAgent)) {
       window.location.href =
         'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.misfinanzas.personal.a36;end';
     } else {
@@ -366,14 +438,12 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
   };
 
-  // Abrir pantalla del sistema Android "Acceso a notificaciones" (NotificationListenerService)
   const handleOpenNotificationAccessSettings = () => {
     if (window.AndroidNativeBridge?.openNotificationSettings) {
       window.AndroidNativeBridge.openNotificationSettings();
       return;
     }
-    const isAndroid = /android/i.test(navigator.userAgent);
-    if (isAndroid) {
+    if (/android/i.test(navigator.userAgent)) {
       window.location.href = 'intent:#Intent;action=android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS;end';
     } else {
       alert(
@@ -382,11 +452,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
   };
 
-  // Sincronizar y escanear al instante todas las fuentes (Barra de estado Android + Webhook en vivo + Portapapeles)
   const handleScanAllSourcesNow = async () => {
     let foundCount = 0;
 
-    // 1. Escanear barra de estado Android si está en el APK
     try {
       window.AndroidNativeBridge?.scanActiveNotificationsNow?.();
       const rawJson = window.AndroidNativeBridge?.getCapturedNotificationsJson?.();
@@ -406,7 +474,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       // ignore
     }
 
-    // 2. Revisar cola del servidor Webhook (/api/webhook/pendientes)
     try {
       const res = await fetch('/api/webhook/pendientes');
       if (res.ok) {
@@ -424,7 +491,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       // ignore
     }
 
-    // 3. Revisar portapapeles dentro del gesto táctil
     try {
       const clip = (await navigator.clipboard.readText())?.trim();
       setClipboardPermGranted(true);
@@ -443,11 +509,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
 
     if (foundCount > 0) {
-      setSavedBanner(`✅ ¡Se encontraron y procesaron ${foundCount} notificación(es) pendiente(s)!`);
+      setSavedBanner(`✅ ¡Se revisaron ${foundCount} notificación(es) aplicando filtro anti-duplicados y fecha!`);
     } else {
-      setSavedBanner(
-        '📡 Escaneo completado: No hay notificaciones nuevas pendientes en la cola. Si acabas de instalar la app, activa abajo "3. Abrir Acceso a Notificaciones de Android".'
-      );
+      setSavedBanner('📡 Escaneo al día: No hay compras nuevas pendientes por registrar.');
     }
   };
 
@@ -463,11 +527,10 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         });
         setAnalysisResult(res);
         if (res.movimientosDetectados.length > 0 || res.datosExtractoCredito) {
-          recordSuccessfulScan(res, text, activeMode);
-          if (autoSaveOnDetect && res.movimientosDetectados.length > 0) {
-            saveDetectedMovementsAutomatically(res, activeMode);
+          const outcome = validateAndSaveExtractedResult(res, text, activeMode, Date.now());
+          if (outcome.savedCount > 0) {
             setSavedBanner(
-              `✅ ¡Pegado y guardado en tus movimientos e historial de 30 días! (${res.movimientosDetectados.length} registro(s))`
+              `✅ ¡Pegado y registrado sin duplicados! (${outcome.savedCount} compra/movimiento único)`
             );
           }
         }
@@ -516,6 +579,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     const rawToRecord = inputText.trim() || selectedFile?.name || 'Documento escaneado';
     setIsAnalyzing(true);
     setSavedBanner(null);
+    setWarningBanner(null);
 
     try {
       if (!selectedFile && activeMode === 'notificacion') {
@@ -525,11 +589,10 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         });
         setAnalysisResult(localRes);
         if (localRes.movimientosDetectados.length > 0 || localRes.datosExtractoCredito) {
-          recordSuccessfulScan(localRes, rawToRecord, 'notificacion');
-          if (autoSaveOnDetect && localRes.movimientosDetectados.length > 0) {
-            saveDetectedMovementsAutomatically(localRes, 'notificacion');
+          const outcome = validateAndSaveExtractedResult(localRes, rawToRecord, 'notificacion', Date.now());
+          if (outcome.savedCount > 0) {
             setSavedBanner(
-              `✅ ¡Registrado en tu historial!: ${localRes.movimientosDetectados
+              `✅ ¡Compra única registrada!: ${localRes.movimientosDetectados
                 .map((m) => `${m.desc} (${formatCurrency(m.monto, currency)})`)
                 .join(', ')}`
             );
@@ -553,12 +616,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       );
       setAnalysisResult(data);
       if (data.movimientosDetectados?.length > 0 || data.datosExtractoCredito) {
-        recordSuccessfulScan(data, rawToRecord, activeMode);
-        if (autoSaveOnDetect && data.movimientosDetectados?.length > 0) {
-          saveDetectedMovementsAutomatically(data, activeMode);
-          setSavedBanner(
-            `✅ ¡Se analizaron y guardaron ${data.movimientosDetectados.length} movimiento(s) en tu historial!`
-          );
+        const outcome = validateAndSaveExtractedResult(data, rawToRecord, activeMode, Date.now());
+        if (outcome.savedCount > 0) {
+          setSavedBanner(`✅ ¡Se analizaron y guardaron ${outcome.savedCount} movimiento(s) único(s)!`);
         }
       }
     } catch {
@@ -569,12 +629,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       });
       setAnalysisResult(localRes);
       if (localRes.movimientosDetectados.length > 0 || localRes.datosExtractoCredito) {
-        recordSuccessfulScan(localRes, rawToRecord, activeMode);
-        if (autoSaveOnDetect && localRes.movimientosDetectados.length > 0) {
-          saveDetectedMovementsAutomatically(localRes, activeMode);
-          setSavedBanner(
-            `✅ ¡Registrado en tu historial!: ${localRes.movimientosDetectados.length} movimiento(s) detectado(s).`
-          );
+        const outcome = validateAndSaveExtractedResult(localRes, rawToRecord, activeMode, Date.now());
+        if (outcome.savedCount > 0) {
+          setSavedBanner(`✅ ¡Registrado sin duplicados!: ${outcome.savedCount} movimiento(s).`);
         }
       }
     } finally {
@@ -584,8 +641,20 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
   const handleImportAllMovements = () => {
     if (!analysisResult || analysisResult.movimientosDetectados.length === 0) return;
-    saveDetectedMovementsAutomatically(analysisResult, activeMode);
-    setSavedBanner(`✅ Se guardaron ${analysisResult.movimientosDetectados.length} movimiento(s) en tu historial.`);
+    onAddTransactions(
+      analysisResult.movimientosDetectados.map((item) => ({
+        tipo: item.tipo,
+        categoria: item.categoria,
+        monto: item.monto,
+        desc: item.desc,
+        entidad: item.entidad,
+        cuotas: item.cuotas || 1,
+        fuente: activeMode,
+        esEsencial: item.esEsencial ?? false,
+        fingerprint: buildPurchaseFingerprint(item.monto, item.tipo, item.desc, item.entidad),
+      }))
+    );
+    setSavedBanner(`✅ Se guardaron manualmente ${analysisResult.movimientosDetectados.length} movimiento(s).`);
   };
 
   const handleImportSingleMovement = (item: ExtractedTransactionItem) => {
@@ -599,6 +668,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         cuotas: item.cuotas || 1,
         fuente: activeMode,
         esEsencial: item.esEsencial ?? false,
+        fingerprint: buildPurchaseFingerprint(item.monto, item.tipo, item.desc, item.entidad),
       },
     ]);
     setSavedBanner(`✅ Movimiento "${item.desc}" (${formatCurrency(item.monto, currency)}) registrado.`);
@@ -621,7 +691,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       enMora: false,
       notas: `Importado de extracto. Cuota de manejo: $${(ext.cuotaManejo || 0).toLocaleString('es-CO')}.`,
     });
-    setSavedBanner(`✅ Obligación crediticia de ${ext.entidad || 'tu extracto'} guardada en la pestaña Deudas.`);
+    setSavedBanner(`✅ Obligación crediticia de ${ext.entidad || 'tu extracto'} guardada en Deudas.`);
   };
 
   const formatRelativeDays = (timestamp: number) => {
@@ -633,42 +703,42 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     return diffDays === 1 ? 'Ayer' : `Hace ${diffDays} días`;
   };
 
+  const cutoffTimestamp = getPolicyCutoffTimestamp(capturePolicy);
+  const cutoffFormatted = cutoffTimestamp
+    ? new Date(cutoffTimestamp).toLocaleString('es-CO', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : 'Sin límite de antigüedad';
+
   return (
     <div className="space-y-4">
-      {/* Panel de Estado y Control de Permisos del Lector de Notificaciones (SIEMPRE VISIBLE) */}
-      <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl p-4 space-y-3.5 shadow-lg">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
-              <Radio className="w-5 h-5 text-indigo-400 animate-pulse" />
+      {/* TARJETA 1: ESCUDO ANTI-DUPLICADOS Y PLAZO DE FECHA DE CAPTURA */}
+      <div className="bg-slate-900/90 backdrop-blur-xl border border-indigo-500/30 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 border border-indigo-500/40 flex items-center justify-center shadow-inner">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-sm font-bold text-white">
-                  Centro de Permisos y Lector Automático Bancario
+                <h2 className="text-sm sm:text-base font-extrabold text-white tracking-tight">
+                  Filtro Inteligente Anti-Duplicados y Plazo de Fechas
                 </h2>
-                <span
-                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                    nativePermissionGranted || webNotifPerm === 'granted' || clipboardPermGranted
-                      ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-300'
-                      : 'bg-amber-950/90 border-amber-500/50 text-amber-300'
-                  }`}
-                >
-                  {nativePermissionGranted
-                    ? '🟢 Escucha Nativa Android 24/7 Activa'
-                    : webNotifPerm === 'granted' || clipboardPermGranted
-                    ? '🟢 Permisos Web/Portapapeles Activos'
-                    : '🟡 Requiere Habilitar Permisos'}
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-950/90 border border-emerald-500/40 text-emerald-300">
+                  1 Compra = 1 Único Registro
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
-                Habilita aquí los permisos de tu Samsung Galaxy A36 5G para capturar compras de Nequi, Bancolombia, Daviplata, Nu y SMS
+              <p className="text-xs text-slate-400 mt-0.5">
+                Evita anotar la misma compra varias veces (Push + SMS + Correo) y bloquea notificaciones antiguas
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Botón para abrir el Modal de Historial de los últimos 30 días */}
             <button
               type="button"
               onClick={() => setShowHistoryModal(true)}
@@ -681,127 +751,288 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               </span>
             </button>
 
-            <label className="flex items-center gap-2 text-xs font-semibold bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer text-slate-200">
-              <input
-                type="checkbox"
-                checked={autoSaveOnDetect}
-                onChange={(e) => setAutoSaveOnDetect(e.target.checked)}
-                className="accent-emerald-500"
-              />
-              Auto-Guardar Compras
-            </label>
+            <button
+              type="button"
+              onClick={onCleanDuplicatesNow}
+              className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-slate-800 hover:bg-rose-950/80 border border-slate-700 hover:border-rose-500/50 text-slate-200 hover:text-rose-200 transition"
+              title="Eliminar cualquier compra repetida en tus movimientos actuales"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Depurar Duplicados</span>
+            </button>
           </div>
         </div>
 
-        {/* Botonera de Permisos SIEMPRE VISIBLE (Funciona tanto en APK como en Chrome Android) */}
-        <div className="bg-slate-950/95 border border-indigo-500/30 rounded-xl p-3.5 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-bold text-indigo-200 flex items-center gap-1.5">
-              <Settings className="w-4 h-4 text-indigo-400" />
-              <span>Panel de Activación de Permisos (Toca cada botón para dar permiso en tu celular):</span>
+        {/* Selector de Plazo / Fecha desde la cual registrar notificaciones */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 bg-slate-950/90 border border-slate-800/90 rounded-2xl p-3.5">
+          <div className="lg:col-span-7 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 text-indigo-400" />
+                <span>¿Desde qué fecha quieres registrar notificaciones?</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={capturePolicy.ignorarNotificacionesAntiguas}
+                  onChange={(e) =>
+                    onUpdateCapturePolicy({
+                      ...capturePolicy,
+                      ignorarNotificacionesAntiguas: e.target.checked,
+                    })
+                  }
+                  className="accent-emerald-500"
+                />
+                Bloquear antiguas
+              </label>
             </div>
-            <span className="text-[11px] text-slate-400">
-              Modo actual: {hasNativeAndroidBridge ? '📱 APK Nativo Android Detectado' : '🌐 App Web / PWA (o APK sin recargar)'}
-            </span>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              {[
+                { id: 'desde_ahora', label: '⚡ Desde Ahora' },
+                { id: 'solo_hoy', label: '☀️ Solo Hoy' },
+                { id: 'fecha_personalizada', label: '📅 Elegir Fecha' },
+                { id: 'ultimos_dias', label: '⏳ Últimos Días' },
+              ].map((opt) => {
+                const active = capturePolicy.modoPlazo === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      const now = Date.now();
+                      onUpdateCapturePolicy({
+                        ...capturePolicy,
+                        ignorarNotificacionesAntiguas: true,
+                        modoPlazo: opt.id as CaptureTimeframeMode,
+                        timestampCorteMs: opt.id === 'desde_ahora' ? now : capturePolicy.timestampCorteMs,
+                      });
+                    }}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition ${
+                      active
+                        ? 'bg-indigo-600 border-indigo-400 text-white shadow'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {capturePolicy.modoPlazo === 'fecha_personalizada' && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-xs text-slate-300">Registrar solo desde:</span>
+                <input
+                  type="datetime-local"
+                  value={capturePolicy.desdeFechaISO}
+                  onChange={(e) =>
+                    onUpdateCapturePolicy({
+                      ...capturePolicy,
+                      desdeFechaISO: e.target.value,
+                      timestampCorteMs: new Date(e.target.value).getTime() || Date.now(),
+                    })
+                  }
+                  className="bg-slate-900 border border-indigo-500/50 rounded-xl px-3 py-1.5 text-xs text-white font-semibold"
+                />
+              </div>
+            )}
+
+            {capturePolicy.modoPlazo === 'ultimos_dias' && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-xs text-slate-300">Aceptar notificaciones de los últimos:</span>
+                {[1, 3, 7, 15, 30].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() =>
+                      onUpdateCapturePolicy({
+                        ...capturePolicy,
+                        ultimosDias: d,
+                      })
+                    }
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                      capturePolicy.ultimosDias === d
+                        ? 'bg-indigo-600 border-indigo-400 text-white'
+                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    {d} {d === 1 ? 'día' : 'días'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="text-[11px] text-slate-400 flex items-center justify-between gap-2 pt-0.5">
+              <span>
+                📌 <strong>Corte activo:</strong> Solo se registran compras desde{' '}
+                <strong className="text-indigo-300">{cutoffFormatted}</strong> en adelante.
+              </span>
+              {capturePolicy.modoPlazo === 'desde_ahora' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateCapturePolicy({
+                      ...capturePolicy,
+                      timestampCorteMs: Date.now(),
+                    })
+                  }
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 underline shrink-0"
+                >
+                  Actualizar a este minuto
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            {/* Botón 1: Solicitar Permisos del Sistema (Notificaciones + SMS + Portapapeles) */}
-            <button
-              type="button"
-              onClick={handleRequestAllPermissions}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md"
-            >
-              <Bell className="w-4 h-4 shrink-0" />
-              <span>1. Solicitar Permisos Ahora</span>
-            </button>
-
-            {/* Botón 2: Abrir Ajustes de la App (Desbloquear Ajustes Restringidos Samsung) */}
-            <button
-              type="button"
-              onClick={handleOpenAppDetailsSettings}
-              className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md"
-            >
-              <Settings className="w-4 h-4 shrink-0" />
-              <span>2. Permitir Ajustes Restringidos</span>
-            </button>
-
-            {/* Botón 3: Abrir Acceso a Notificaciones de Android */}
-            <button
-              type="button"
-              onClick={handleOpenNotificationAccessSettings}
-              className={`text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow-md ${
-                nativePermissionGranted
-                  ? 'bg-emerald-900 border border-emerald-500 text-emerald-200'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-              }`}
-            >
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>
-                {nativePermissionGranted
-                  ? '3. Acceso Android Activo ✓'
-                  : '3. Abrir Acceso a Notificaciones'}
+          {/* Configuración de Ventana Anti-Duplicados */}
+          <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                🛡️ Protección Misma Compra
               </span>
-            </button>
+              <label className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={capturePolicy.evitarDuplicadosMismaCompra}
+                  onChange={(e) =>
+                    onUpdateCapturePolicy({
+                      ...capturePolicy,
+                      evitarDuplicadosMismaCompra: e.target.checked,
+                    })
+                  }
+                  className="accent-emerald-500"
+                />
+                Activa
+              </label>
+            </div>
 
-            {/* Botón 4: Escanear Notificaciones Actuales / Portapapeles Ahora */}
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Si una compra envía notificación de la App + SMS + Correo por el mismo monto, solo se anota la primera vez.
+            </p>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-300">Ventana de bloqueo:</span>
+              <select
+                value={capturePolicy.ventanaAntiduplicadosMinutos}
+                onChange={(e) =>
+                  onUpdateCapturePolicy({
+                    ...capturePolicy,
+                    ventanaAntiduplicadosMinutos: Number(e.target.value),
+                  })
+                }
+                aria-label="Ventana anti-duplicados"
+                className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white font-semibold"
+              >
+                <option value={15}>15 minutos</option>
+                <option value={60}>1 hora (Recomendado)</option>
+                <option value={360}>6 horas</option>
+                <option value={1440}>Mismo día (24 horas)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-800">
+              <span className="text-emerald-400 font-semibold">
+                🛡️ {blockedDuplicatesCount} duplicadas omitidas
+              </span>
+              <span className="text-amber-300 font-semibold">
+                ⏳ {blockedOldCount} antiguas omitidas
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Barra Compacta de Acciones Rápidas y Permisos del Teléfono */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={handleScanAllSourcesNow}
-              className="bg-slate-800 hover:bg-slate-700 border border-indigo-500/40 text-indigo-200 text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow transition"
             >
-              <RotateCcw className="w-4 h-4 shrink-0 text-indigo-400" />
-              <span>4. Escanear Notificaciones Ahora</span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Sincronizar Compras Nuevas</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePasteFromClipboard}
+              className="bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
+            >
+              <ClipboardPaste className="w-3.5 h-3.5" />
+              <span>Pegar del Portapapeles</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowPermissionsPanel((v) => !v)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
+            >
+              <Settings className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Configurar Permisos Samsung A36</span>
+              {showPermissionsPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-[11px] text-slate-300">
-            <div>
-              💡 <strong>¿Por qué no leyó tu compra anterior?</strong> Si abriste el enlace web en Chrome sin haber instalado el nuevo APK (o sin encender el interruptor en el botón <strong>"3. Abrir Acceso a Notificaciones"</strong>), Android bloquea por seguridad la lectura de otras apps hasta que enciendas ese permiso.
+          <label className="flex items-center gap-2 text-xs font-semibold bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer text-slate-200">
+            <input
+              type="checkbox"
+              checked={autoSaveOnDetect}
+              onChange={(e) => setAutoSaveOnDetect(e.target.checked)}
+              className="accent-emerald-500"
+            />
+            Auto-Guardar
+          </label>
+        </div>
+
+        {/* Panel Desplegable de Permisos del Dispositivo */}
+        {showPermissionsPanel && (
+          <div className="bg-slate-950 border border-indigo-500/30 rounded-2xl p-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-indigo-200">
+                Permisos de Lectura Automática en Samsung Galaxy A36 5G:
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Estado: {nativePermissionGranted ? '🟢 Escucha Android 24/7 Activa' : webNotifPerm === 'granted' || clipboardPermGranted ? '🟢 Permisos Web Activos' : '🟡 Pendiente'}
+              </span>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={handlePasteFromClipboard}
-                className="bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition"
+                onClick={handleRequestAllPermissions}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
               >
-                <ClipboardPaste className="w-3.5 h-3.5" />
-                Pegar del Portapapeles
+                <Bell className="w-4 h-4 shrink-0" />
+                <span>1. Pedir Permisos Ahora</span>
               </button>
+
               <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    await fetch('/api/webhook/notificacion', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        app: 'Bancolombia',
-                        texto: 'Bancolombia: Compraste $36.800,00 en SUPERMERCADO D1 con tu T.Deb *4829.',
-                      }),
-                    });
-                    await handleScanAllSourcesNow();
-                  } catch {
-                    onSimulateIncomingNotif(
-                      'Bancolombia',
-                      'Bancolombia: Compraste $36.800,00 en SUPERMERCADO D1 con tu T.Deb *4829.'
-                    );
-                  }
-                }}
-                className="bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1 transition"
+                onClick={handleOpenAppDetailsSettings}
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
               >
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Probar Recepción Real
+                <Settings className="w-4 h-4 shrink-0" />
+                <span>2. Permitir Ajustes Restringidos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenNotificationAccessSettings}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>3. Abrir Acceso a Notificaciones</span>
               </button>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Bandeja de Notificaciones Capturadas Automáticamente en segundo plano */}
+        {/* Bandeja de Notificaciones Pendientes de Revisión */}
         {autoCapturedNotifs.length > 0 && (
           <div className="space-y-2 pt-2 border-t border-slate-800">
             <span className="text-xs font-bold text-emerald-400 block">
-              📥 Notificaciones Capturadas ({autoCapturedNotifs.length}):
+              📥 Notificaciones Recibidas ({autoCapturedNotifs.length}):
             </span>
             {autoCapturedNotifs.map((n) => (
               <div
@@ -823,16 +1054,15 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                         text: n.text,
                       });
                       setAnalysisResult(r);
-                      recordSuccessfulScan(r, n.text, 'notificacion');
-                      saveDetectedMovementsAutomatically(r, 'notificacion');
-                      setSavedBanner(
-                        `✅ Notificación de ${n.app} guardada en tus movimientos e historial.`
-                      );
+                      const outcome = validateAndSaveExtractedResult(r, n.text, 'notificacion', Date.now());
+                      if (outcome.savedCount > 0) {
+                        setSavedBanner(`✅ Notificación de ${n.app} guardada como compra única.`);
+                      }
                       onDismissCapturedNotif(n.id);
                     }}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg"
                   >
-                    Guardar en Movimientos
+                    Registrar Compra
                   </button>
                   <button
                     type="button"
@@ -848,8 +1078,21 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         )}
       </div>
 
+      {warningBanner && (
+        <div className="bg-amber-950/90 border border-amber-500/60 text-amber-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+          <span>{warningBanner}</span>
+          <button
+            type="button"
+            onClick={() => setWarningBanner(null)}
+            className="text-amber-300 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {savedBanner && (
-        <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 px-4 py-3 rounded-xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+        <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>{savedBanner}</span>
@@ -859,18 +1102,18 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
             onClick={() => setShowHistoryModal(true)}
             className="text-[11px] underline text-emerald-300 hover:text-white shrink-0"
           >
-            Ver en Historial 30 días →
+            Ver Historial 30 días →
           </button>
         </div>
       )}
 
       {/* Escáner Multimodal: Notificación Escrita, Foto/Recibo, Extracto PDF, Correo */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
+      <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {[
-            { id: 'notificacion', label: 'Texto Notificación / SMS', icon: Bell },
-            { id: 'imagen', label: 'Foto Recibo / Factura', icon: ImageIcon },
-            { id: 'pdf', label: 'Extracto en PDF', icon: FileText },
+            { id: 'notificacion', label: 'Notificación / SMS', icon: Bell },
+            { id: 'imagen', label: 'Foto de Recibo', icon: ImageIcon },
+            { id: 'pdf', label: 'Extracto PDF', icon: FileText },
             { id: 'correo', label: 'Correo Bancario', icon: Mail },
           ].map((tab) => {
             const Icon = tab.icon;
@@ -882,11 +1125,12 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 onClick={() => {
                   setActiveMode(tab.id as SourceType);
                   setSavedBanner(null);
+                  setWarningBanner(null);
                 }}
-                className={`flex items-center gap-2 p-3 rounded-xl border text-left transition ${
+                className={`flex items-center gap-2 p-3 rounded-2xl border text-left transition ${
                   isActive
-                    ? 'bg-indigo-600 border-indigo-500 text-white font-bold shadow'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 border-indigo-400 text-white font-bold shadow-md'
+                    : 'bg-slate-950/90 border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
                 <Icon className="w-4 h-4 shrink-0" />
@@ -896,9 +1140,8 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           })}
         </div>
 
-        {/* Subida de foto/cámara o PDF real */}
         {(activeMode === 'imagen' || activeMode === 'pdf') && (
-          <div className="p-3.5 rounded-xl bg-slate-950 border border-dashed border-slate-700">
+          <div className="p-3.5 rounded-2xl bg-slate-950 border border-dashed border-slate-700">
             <input
               ref={fileInputRef}
               type="file"
@@ -922,7 +1165,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     📎 Archivo cargado: {selectedFile.name} ({Math.round(selectedFile.size / 1024)} KB)
                   </span>
                 ) : activeMode === 'imagen' ? (
-                  'Toma una foto a tu recibo/comprobante o elige una imagen de tu galería:'
+                  'Toma una foto a tu recibo/factura o elige una imagen de tu galería:'
                 ) : (
                   'Selecciona el archivo PDF de tu extracto bancario desde tu celular:'
                 )}
@@ -945,7 +1188,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                   className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-bold px-3 py-2 rounded-xl border border-slate-700 transition"
                 >
                   <Upload className="w-4 h-4" />
-                  {activeMode === 'imagen' ? 'Elegir de Galería' : 'Subir PDF'}
+                  {activeMode === 'imagen' ? 'Galería' : 'Subir PDF'}
                 </button>
                 {selectedFile && (
                   <button
@@ -968,7 +1211,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 <img
                   src={previewUrl}
                   alt="Comprobante seleccionado"
-                  className="max-h-48 rounded-lg border border-slate-700 object-contain"
+                  className="max-h-48 rounded-xl border border-slate-700 object-contain"
                 />
               </div>
             )}
@@ -982,24 +1225,24 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
             rows={3}
             placeholder={
               activeMode === 'notificacion'
-                ? 'Escribe o pega tu notificación bancaria aquí (Ej: "Compra en Éxito por $58.000 con Nequi" o "Recibiste $300.000 en Bancolombia")...'
+                ? 'Pega o escribe una notificación para analizarla (Ej: "Bancolombia: Compraste $45.000 en D1")...'
                 : activeMode === 'pdf'
                 ? 'Sube tu extracto PDF arriba o pega aquí el texto del extracto...'
                 : activeMode === 'correo'
                 ? 'Pega aquí el texto del correo de tu banco o factura...'
                 : 'Opcional: Escribe un detalle o monto si la imagen está borrosa...'
             }
-            className="w-full bg-slate-950 text-slate-100 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-xl p-3 text-sm"
+            className="w-full bg-slate-950 text-slate-100 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-2xl p-3.5 text-sm"
           />
 
-          <div className="flex flex-wrap items-center justify-between mt-2.5 gap-2">
+          <div className="flex flex-wrap items-center justify-between mt-3 gap-2">
             <button
               type="button"
               onClick={() => setShowHistoryModal(true)}
               className="text-xs text-slate-400 hover:text-indigo-300 flex items-center gap-1.5 font-medium"
             >
               <Clock className="w-3.5 h-3.5 text-indigo-400" />
-              Ver notificaciones procesadas (últimos 30 días): {recent30DaysHistory.length}
+              Historial de los últimos 30 días ({recent30DaysHistory.length})
             </button>
 
             <div className="flex items-center gap-2">
@@ -1019,13 +1262,13 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 type="button"
                 disabled={isAnalyzing || (!inputText.trim() && !selectedFile)}
                 onClick={handleRunAnalysis}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow transition"
+                className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-500 hover:to-emerald-500 disabled:opacity-50 text-white font-bold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-lg transition"
               >
                 <Sparkles className="w-4 h-4" />
                 {isAnalyzing
-                  ? 'Procesando...'
+                  ? 'Analizando...'
                   : autoSaveOnDetect
-                  ? 'Analizar y Registrar Movimiento'
+                  ? 'Analizar y Registrar (Sin Duplicar)'
                   : 'Analizar Contenido'}
               </button>
             </div>
@@ -1035,29 +1278,29 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
       {/* Resultados extraídos */}
       {analysisResult && (
-        <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl p-4 space-y-4">
+        <div className="bg-slate-900 border border-indigo-500/40 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
           <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-800 pb-3">
             <div>
-              <span className="text-[11px] font-bold uppercase px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
+              <span className="text-[11px] font-bold uppercase px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">
                 {analysisResult.tipoDocumentoDetectado}
               </span>
               <p className="text-sm text-slate-200 mt-1.5">{analysisResult.resumenEjecutivo}</p>
             </div>
 
-            {!autoSaveOnDetect && analysisResult.movimientosDetectados.length > 0 && (
+            {(!autoSaveOnDetect || warningBanner) && analysisResult.movimientosDetectados.length > 0 && (
               <button
                 type="button"
                 onClick={handleImportAllMovements}
                 className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition shrink-0"
               >
                 <PlusCircle className="w-4 h-4" />
-                Guardar Todos ({analysisResult.movimientosDetectados.length})
+                Forzar Guardado ({analysisResult.movimientosDetectados.length})
               </button>
             )}
           </div>
 
           {analysisResult.datosExtractoCredito && (
-            <div className="bg-indigo-950/30 border border-indigo-500/40 rounded-xl p-3.5">
+            <div className="bg-indigo-950/30 border border-indigo-500/40 rounded-2xl p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                 <h3 className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
                   <CreditCard className="w-4 h-4" />
@@ -1072,25 +1315,25 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 </button>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                <div className="bg-slate-950 p-2.5 rounded-lg">
+                <div className="bg-slate-950 p-2.5 rounded-xl">
                   <span className="text-slate-400 block">Cupo Total</span>
                   <strong className="text-white">
                     {formatCurrency(analysisResult.datosExtractoCredito.cupoTotal || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-lg">
+                <div className="bg-slate-950 p-2.5 rounded-xl">
                   <span className="text-slate-400 block">Saldo / Deuda</span>
                   <strong className="text-amber-400">
                     {formatCurrency(analysisResult.datosExtractoCredito.saldoActual || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-lg">
+                <div className="bg-slate-950 p-2.5 rounded-xl">
                   <span className="text-slate-400 block">Pago Mínimo</span>
                   <strong className="text-emerald-400">
                     {formatCurrency(analysisResult.datosExtractoCredito.pagoMinimo || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-lg">
+                <div className="bg-slate-950 p-2.5 rounded-xl">
                   <span className="text-slate-400 block">Tasa E.A.</span>
                   <strong className="text-rose-400">{analysisResult.datosExtractoCredito.tasaEA}% E.A.</strong>
                 </div>
@@ -1103,15 +1346,15 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               {analysisResult.movimientosDetectados.map((mov, idx) => (
                 <div
                   key={idx}
-                  className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3"
+                  className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-2xl p-3.5"
                 >
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-bold text-white">{mov.desc}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
                         {mov.entidad}
                       </span>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-950 text-indigo-300">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300">
                         {mov.categoria}
                       </span>
                     </div>
@@ -1142,7 +1385,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           )}
 
           {analysisResult.ejemploPracticoAhorro && (
-            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-3 text-xs text-amber-100 flex items-start gap-2">
+            <div className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-3 text-xs text-amber-100 flex items-start gap-2">
               <Lightbulb className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <span>{analysisResult.ejemploPracticoAhorro}</span>
             </div>
@@ -1158,8 +1401,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           aria-modal="true"
           aria-labelledby="modal-history-title"
         >
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Cabecera del Modal */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-3xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
             <div className="px-4 py-3.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center">
@@ -1170,7 +1412,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     Historial de Notificaciones Procesadas (Últimos 30 Días)
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Consulta, busca y filtra todas las notificaciones, correos y documentos procesados con éxito
+                    Registros únicos verificados sin duplicados
                   </p>
                 </div>
               </div>
@@ -1185,12 +1427,11 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               </button>
             </div>
 
-            {/* Resumen Rápido de los 30 Días y Controles de Búsqueda / Filtro */}
             <div className="p-4 bg-slate-900/90 border-b border-slate-800 space-y-3">
               <div className="grid grid-cols-3 gap-2.5">
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
                   <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Notificaciones Procesadas
+                    Compras / Eventos Únicos
                   </span>
                   <strong className="text-sm sm:text-base font-extrabold text-white">
                     {historySummary.count} registros
@@ -1214,7 +1455,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 </div>
               </div>
 
-              {/* Barra de Búsqueda y Filtros */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <div className="sm:col-span-6 relative">
                   <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1222,7 +1462,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     type="text"
                     value={historySearch}
                     onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Buscar por comercio, monto, banco o texto original..."
+                    placeholder="Buscar por comercio, monto, banco o texto..."
                     className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-xl pl-8 pr-3 py-2 text-xs text-white"
                   />
                 </div>
@@ -1258,140 +1498,30 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 </div>
               </div>
 
-              {/* Píldoras de Filtro por Tipo de Movimiento */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1 overflow-x-auto">
-                  <Filter className="w-3.5 h-3.5 text-slate-400 mr-1 shrink-0" />
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Filter className="w-3.5 h-3.5 text-slate-400 mr-1" />
                   {[
                     { id: 'todos', label: 'Todos' },
-                    { id: 'gasto', label: '🛒 Compras / Pagos' },
-                    { id: 'ganancia', label: '💰 Ingresos / Abonos' },
-                    { id: 'deuda', label: '⏳ Deudas' },
-                  ].map((tab) => (
+                    { id: 'gasto', label: 'Compras / Pagos' },
+                    { id: 'ganancia', label: 'Ingresos / Abonos' },
+                    { id: 'deuda', label: 'Deudas' },
+                  ].map((pill) => (
                     <button
-                      key={tab.id}
+                      key={pill.id}
                       type="button"
-                      onClick={() => setHistoryTypeFilter(tab.id)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap ${
-                        historyTypeFilter === tab.id
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                      onClick={() => setHistoryTypeFilter(pill.id)}
+                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition ${
+                        historyTypeFilter === pill.id
+                          ? 'bg-indigo-600 border-indigo-500 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
                       }`}
                     >
-                      {tab.label}
+                      {pill.label}
                     </button>
                   ))}
                 </div>
 
-                {(historySearch || historyTypeFilter !== 'todos' || historyBankFilter !== 'todos' || historyDaysFilter !== 30) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHistorySearch('');
-                      setHistoryTypeFilter('todos');
-                      setHistoryBankFilter('todos');
-                      setHistoryDaysFilter(30);
-                    }}
-                    className="text-[11px] text-indigo-300 hover:text-white flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3 h-3" /> Quitar filtros
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Lista de Registros Históricos */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2.5 bg-slate-950/50">
-              {filteredHistoryRecords.length === 0 ? (
-                <div className="text-center py-10 space-y-2">
-                  <Bell className="w-8 h-8 text-slate-600 mx-auto" />
-                  <p className="text-xs font-semibold text-slate-300">
-                    No se encontraron notificaciones procesadas con estos filtros en los últimos 30 días.
-                  </p>
-                  <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                    Cada vez que pegues una notificación bancaria, uses el botón "Probar Lector en Vivo" o recibas una alerta en tu Samsung A36 5G, quedará guardada aquí automáticamente.
-                  </p>
-                </div>
-              ) : (
-                filteredHistoryRecords.map((rec) => (
-                  <div
-                    key={rec.id}
-                    className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-3.5 space-y-2 transition"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-700/40">
-                            {rec.entidad}
-                          </span>
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-950 text-slate-300 border border-slate-800">
-                            {rec.categoriaPrincipal}
-                          </span>
-                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {rec.fechaStr} ({formatRelativeDays(rec.timestamp)})
-                          </span>
-                        </div>
-                        <div className="text-xs sm:text-sm font-bold text-white">
-                          {rec.resumen}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <strong
-                          className={`text-sm font-extrabold ${
-                            rec.tipoPrincipal === 'ganancia' ? 'text-emerald-400' : 'text-rose-400'
-                          }`}
-                        >
-                          {rec.tipoPrincipal === 'ganancia' ? '+' : '-'}
-                          {formatCurrency(rec.montoTotal, currency)}
-                        </strong>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setInputText(rec.textoOriginal);
-                            setActiveMode(rec.fuente === 'manual' ? 'notificacion' : rec.fuente);
-                            const r = runOnDeviceFinancialAnalysis({
-                              sourceType: rec.fuente === 'manual' ? 'notificacion' : rec.fuente,
-                              text: rec.textoOriginal,
-                            });
-                            setAnalysisResult(r);
-                            setShowHistoryModal(false);
-                          }}
-                          className="text-[11px] bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white font-semibold px-2.5 py-1 rounded-lg transition"
-                          title="Volver a cargar en el escáner"
-                        >
-                          Inspeccionar
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => onDeleteProcessedRecord(rec.id)}
-                          className="p-1 text-slate-500 hover:text-rose-400"
-                          title="Eliminar del historial"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Texto original de la notificación */}
-                    <div className="bg-slate-950/90 border border-slate-800/80 rounded-lg px-3 py-2 text-[11px] text-slate-300 font-mono break-words">
-                      {rec.textoOriginal}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* Pie del Modal */}
-            <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-400">
-                Mostrando {filteredHistoryRecords.length} de {recent30DaysHistory.length} notificaciones (retención automática de 30 días)
-              </span>
-
-              <div className="flex items-center gap-2">
                 {recent30DaysHistory.length > 0 && (
                   <button
                     type="button"
@@ -1400,19 +1530,86 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                         onClearProcessedHistory();
                       }
                     }}
-                    className="text-xs text-rose-400 hover:text-rose-300 px-3 py-1.5 rounded-xl bg-rose-950/40 border border-rose-800/50 font-semibold"
+                    className="text-[11px] text-rose-400 hover:text-rose-300 flex items-center gap-1"
                   >
-                    Vaciar Historial
+                    <Trash2 className="w-3 h-3" />
+                    Vaciar historial
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowHistoryModal(false)}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-1.5 rounded-xl transition"
-                >
-                  Cerrar
-                </button>
               </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+              {filteredHistoryRecords.length === 0 ? (
+                <div className="text-center py-12 px-4 space-y-2">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center mx-auto text-slate-400">
+                    <History className="w-6 h-6" />
+                  </div>
+                  <p className="text-sm font-bold text-slate-300">
+                    No se encontraron notificaciones procesadas con este filtro
+                  </p>
+                </div>
+              ) : (
+                filteredHistoryRecords.map((record) => (
+                  <div
+                    key={record.id}
+                    className="bg-slate-950 border border-slate-800/90 hover:border-indigo-500/40 rounded-xl p-3.5 transition space-y-2"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-500/30">
+                            {record.entidad}
+                          </span>
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-800">
+                            {record.categoriaPrincipal}
+                          </span>
+                          <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-slate-500" />
+                            {record.fechaStr} ({formatRelativeDays(record.timestamp)})
+                          </span>
+                        </div>
+                        <p className="text-xs sm:text-sm font-bold text-white">{record.resumen}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-sm font-extrabold ${
+                            record.tipoPrincipal === 'ganancia' ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {record.tipoPrincipal === 'ganancia' ? '+' : '-'}
+                          {formatCurrency(record.montoTotal, currency)}
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={() => onDeleteProcessedRecord(record.id)}
+                          className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 border border-slate-800 transition"
+                          title="Eliminar del historial"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg px-3 py-2 text-[11px] text-slate-300 font-mono break-words">
+                      {record.textoOriginal}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+              <span> Conservación automática de 30 días sin duplicados</span>
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-4 py-1.5 rounded-xl transition"
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>

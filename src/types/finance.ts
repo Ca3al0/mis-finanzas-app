@@ -18,6 +18,18 @@ export type TransactionCategory =
 
 export type SourceType = 'manual' | 'notificacion' | 'imagen' | 'pdf' | 'correo' | 'automatico';
 
+export type CaptureTimeframeMode = 'desde_ahora' | 'solo_hoy' | 'fecha_personalizada' | 'ultimos_dias';
+
+export interface NotificationCapturePolicy {
+  modoPlazo: CaptureTimeframeMode;
+  desdeFechaISO: string; // formato YYYY-MM-DDTHH:mm
+  ultimosDias: number; // ej. 1, 3, 7, 15, 30
+  timestampCorteMs: number; // sello de tiempo exacto desde el cual se permiten notificaciones
+  ignorarNotificacionesAntiguas: boolean;
+  evitarDuplicadosMismaCompra: boolean;
+  ventanaAntiduplicadosMinutos: number; // ej. 15, 60, 360, 1440 (24h)
+}
+
 export interface ProcessedNotificationRecord {
   id: string;
   timestamp: number;
@@ -30,6 +42,7 @@ export interface ProcessedNotificationRecord {
   tipoPrincipal: TransactionType;
   categoriaPrincipal: TransactionCategory;
   itemsCount: number;
+  fingerprint?: string;
 }
 
 export interface SalaryProfile {
@@ -73,6 +86,7 @@ export interface Transaction {
   tasaEA?: number;
   fuente: SourceType;
   esEsencial?: boolean;
+  fingerprint?: string;
 }
 
 export interface CreditObligation {
