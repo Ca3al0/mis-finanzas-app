@@ -4,7 +4,6 @@ import {
   TrendingUp,
   TrendingDown,
   CreditCard,
-  Sparkles,
   Calculator,
   Bot,
   Plus,
@@ -13,12 +12,13 @@ import {
   Lock,
   Unlock,
   Search,
-  Smartphone,
-  Target,
   Bell,
   ShieldCheck,
   Calendar,
   SlidersHorizontal,
+  X,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import {
   Transaction,
@@ -59,6 +59,7 @@ import { CalculatorsCenter } from './components/CalculatorsCenter';
 import { AdvisorAndMobileCenter } from './components/AdvisorAndMobileCenter';
 
 type MainSection = 'mimes' | 'escaner' | 'calculos' | 'creditos' | 'asesor';
+type HomeSubTab = 'movimientos' | 'pagos' | 'salario' | 'metas';
 
 const STORAGE_KEY_TX = 'mis_finanzas_real_tx_v3';
 const STORAGE_KEY_CREDITS = 'mis_finanzas_real_credits_v3';
@@ -120,6 +121,8 @@ const CATEGORIES_BY_TYPE: Record<TransactionType, TransactionCategory[]> = {
 
 export function App() {
   const [activeSection, setActiveSection] = useState<MainSection>('mimes');
+  const [homeSubTab, setHomeSubTab] = useState<HomeSubTab>('movimientos');
+  const [showAddTxModal, setShowAddTxModal] = useState<boolean>(false);
   const [currency, setCurrency] = useState<CurrencyCode>('COP');
 
   // Política de plazo de fecha y anti-duplicados de notificaciones
@@ -139,11 +142,10 @@ export function App() {
     return createDefaultCapturePolicy();
   });
 
-  // Contadores de protección en vivo
   const [blockedDuplicatesCount, setBlockedDuplicatesCount] = useState<number>(0);
   const [blockedOldCount, setBlockedOldCount] = useState<number>(0);
 
-  // 1. Transacciones reales del usuario (con limpieza inicial automática de duplicados)
+  // 1. Transacciones reales del usuario (con limpieza inicial de duplicados)
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     try {
       const savedV3 = localStorage.getItem(STORAGE_KEY_TX);
@@ -162,7 +164,7 @@ export function App() {
     return [];
   });
 
-  // 2. Obligaciones crediticias reales del usuario
+  // 2. Obligaciones crediticias reales
   const [credits, setCredits] = useState<CreditObligation[]>(() => {
     try {
       const savedV3 = localStorage.getItem(STORAGE_KEY_CREDITS);
@@ -179,7 +181,7 @@ export function App() {
     return [];
   });
 
-  // 3. Salario e ingreso fijo mensual del usuario
+  // 3. Salario mensual
   const [salaryProfile, setSalaryProfile] = useState<SalaryProfile>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_SALARY);
@@ -200,7 +202,7 @@ export function App() {
     return DEFAULT_SALARY;
   });
 
-  // 4. Pagos fijos mensuales ("Cosas que pago cada mes")
+  // 4. Pagos fijos mensuales
   const [recurringPayments, setRecurringPayments] = useState<RecurringPayment[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_BILLS);
@@ -214,7 +216,7 @@ export function App() {
     return [];
   });
 
-  // 5. Metas financieras y propósitos de ahorro
+  // 5. Metas financieras
   const [goals, setGoals] = useState<FinancialGoal[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_GOALS);
@@ -228,7 +230,7 @@ export function App() {
     return [];
   });
 
-  // 6. Historial de notificaciones procesadas con éxito (últimos 30 días)
+  // 6. Historial de notificaciones (30 días)
   const [processedNotificationsHistory, setProcessedNotificationsHistory] = useState<
     ProcessedNotificationRecord[]
   >(() => {
@@ -247,7 +249,6 @@ export function App() {
     return [];
   });
 
-  // Referencias en tiempo real para el motor anti-duplicados
   const transactionsRef = useRef<Transaction[]>(transactions);
   const historyRef = useRef<ProcessedNotificationRecord[]>(processedNotificationsHistory);
   const policyRef = useRef<NotificationCapturePolicy>(capturePolicy);
@@ -271,13 +272,12 @@ export function App() {
     }
   }, [capturePolicy]);
 
-  // Bandeja de notificaciones capturadas en tiempo real
   const [autoCapturedNotifs, setAutoCapturedNotifs] = useState<
     { id: string; app: string; text: string; time: string }[]
   >([]);
   const [liveToast, setLiveToast] = useState<string | null>(null);
 
-  // Formulario de registro manual rápido
+  // Estado del modal de nuevo movimiento manual
   const [manTipo, setManTipo] = useState<TransactionType>('gasto');
   const [manCategoria, setManCategoria] = useState<TransactionCategory>('Alimentación y Supermercado');
   const [manMonto, setManMonto] = useState('');
@@ -285,11 +285,9 @@ export function App() {
   const [manEntidad, setManEntidad] = useState('Nequi');
   const [manEsEsencial, setManEsEsencial] = useState(true);
 
-  // Filtros de movimientos
   const [filtroTipo, setFiltroTipo] = useState<string>('todos');
   const [busqueda, setBusqueda] = useState<string>('');
 
-  // Bloqueo opcional por PIN de 4 dígitos
   const [pinHash, setPinHash] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY_PIN));
   const [isLocked, setIsLocked] = useState<boolean>(() => Boolean(localStorage.getItem(STORAGE_KEY_PIN)));
   const [pinInput, setPinInput] = useState('');
@@ -297,7 +295,6 @@ export function App() {
   const [showPinSetup, setShowPinSetup] = useState(false);
   const [newPin, setNewPin] = useState('');
 
-  // Evento de instalación nativa Android PWA
   const [installPromptEvent, setInstallPromptEvent] = useState<any>(null);
 
   useEffect(() => {
@@ -309,7 +306,6 @@ export function App() {
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
-  // Persistencia automática en localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_TX, JSON.stringify(transactions));
@@ -364,7 +360,7 @@ export function App() {
     setLiveToast(msg);
     setTimeout(() => {
       setLiveToast((prev) => (prev === msg ? null : prev));
-    }, 4500);
+    }, 4000);
   }, []);
 
   const handleRecordProcessedNotification = useCallback(
@@ -448,13 +444,12 @@ export function App() {
       setTransactions(cleaned);
       transactionsRef.current = cleaned;
       setBlockedDuplicatesCount((c) => c + removedCount);
-      showToast(`🛡️ Se eliminaron ${removedCount} registro(s) duplicados de la misma compra.`);
+      showToast(`Se eliminaron ${removedCount} registro(s) duplicados.`);
     } else {
-      showToast('🛡️ Tus movimientos están impecables: 0 compras duplicadas encontradas.');
+      showToast('Sin duplicados: Todos tus registros son únicos.');
     }
   }, [showToast]);
 
-  // Motor central de lectura de notificaciones (con filtro de fecha/plazo y bloqueo anti-duplicados de misma compra)
   const processIncomingNotification = useCallback(
     (app: string, text: string, eventTimestampMs?: number) => {
       const cleanText = sanitizeTextInput(text, 600);
@@ -463,7 +458,6 @@ export function App() {
       const notifTime = eventTimestampMs && eventTimestampMs > 0 ? eventTimestampMs : Date.now();
       const currentPolicy = policyRef.current;
 
-      // 1. Verificar si la notificación es más antigua que el plazo/fecha configurado por el usuario
       if (currentPolicy.ignorarNotificacionesAntiguas) {
         const oldCheck = isNotificationOlderThanPolicy(cleanText, notifTime, currentPolicy);
         if (oldCheck.isOld) {
@@ -479,7 +473,6 @@ export function App() {
       });
 
       if (parsed.movimientosDetectados.length > 0) {
-        // 2. Verificar que esta compra no haya sido registrada ya por otra notificación (ej: App Push + SMS + Correo)
         const uniqueMovements = parsed.movimientosDetectados.filter((m) => {
           if (!currentPolicy.evitarDuplicadosMismaCompra) return true;
           const dupCheck = isDuplicatePurchase(
@@ -504,7 +497,7 @@ export function App() {
         });
 
         if (uniqueMovements.length === 0) {
-          return; // Compra repetida bloqueada silenciosamente para no alterar los cálculos de gastos
+          return;
         }
 
         const first = uniqueMovements[0];
@@ -515,7 +508,7 @@ export function App() {
             tipo: m.tipo,
             categoria: m.categoria,
             monto: m.monto,
-            desc: m.desc.startsWith('📲') ? m.desc : `📲 ${m.desc}`,
+            desc: m.desc,
             entidad: m.entidad || app,
             cuotas: m.cuotas || 1,
             fuente: 'notificacion',
@@ -547,7 +540,7 @@ export function App() {
         });
 
         showToast(
-          `📲 Compra única registrada: ${first.tipo === 'ganancia' ? '+' : '-'}${formatCurrency(
+          `Compra registrada: ${first.tipo === 'ganancia' ? '+' : '-'}${formatCurrency(
             first.monto,
             currency
           )} (${first.entidad || app})`
@@ -569,91 +562,6 @@ export function App() {
     },
     [currency, handleAddMultipleTransactions, handleRecordProcessedNotification, showToast]
   );
-
-  const [showPermissionsBanner, setShowPermissionsBanner] = useState<boolean>(false);
-  const [permissionStatusText, setPermissionStatusText] = useState<string>('');
-
-  const handleGlobalRequestPermissions = async () => {
-    const results: string[] = [];
-
-    if (window.AndroidNativeBridge?.requestAllRuntimePermissions) {
-      try {
-        window.AndroidNativeBridge.requestAllRuntimePermissions();
-        results.push('Diálogo de permisos Android abierto');
-      } catch {
-        // ignore
-      }
-    }
-
-    if (typeof Notification !== 'undefined' && Notification.requestPermission) {
-      try {
-        const perm = await Notification.requestPermission();
-        if (perm === 'granted') {
-          results.push('Notificaciones activadas ✓');
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (navigator.clipboard?.readText) {
-      try {
-        const clip = (await navigator.clipboard.readText())?.trim();
-        results.push('Portapapeles autorizado ✓');
-        if (
-          clip &&
-          clip.length >= 8 &&
-          /\$|cop|compra|recibiste|pagaste|abono|nequi|bancolombia|daviplata|nu|transferencia|factura|cuota|retiro/i.test(clip)
-        ) {
-          processIncomingNotification('Portapapeles', clip, Date.now());
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (window.AndroidNativeBridge?.scanActiveNotificationsNow) {
-      try {
-        window.AndroidNativeBridge.scanActiveNotificationsNow();
-      } catch {
-        // ignore
-      }
-    }
-
-    const msg =
-      results.length > 0
-        ? `🔔 ${results.join(' • ')}`
-        : '🔔 Solicitud enviada. Si usas Samsung A36, toca también "Activar Acceso Notificaciones".';
-    setPermissionStatusText(msg);
-    showToast(msg);
-  };
-
-  const handleGlobalOpenNotificationSettings = () => {
-    if (window.AndroidNativeBridge?.openNotificationSettings) {
-      window.AndroidNativeBridge.openNotificationSettings();
-      return;
-    }
-    if (/android/i.test(navigator.userAgent)) {
-      window.location.href = 'intent:#Intent;action=android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS;end';
-    } else {
-      setActiveSection('escaner');
-      showToast('En tu Samsung A36 ve a: Ajustes → Notificaciones → Ajustes avanzados → Acceso a notificaciones.');
-    }
-  };
-
-  const handleGlobalOpenAppDetails = () => {
-    if (window.AndroidNativeBridge?.openAppDetailsSettings) {
-      window.AndroidNativeBridge.openAppDetailsSettings();
-      return;
-    }
-    if (/android/i.test(navigator.userAgent)) {
-      window.location.href =
-        'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.misfinanzas.personal.a36;end';
-    } else {
-      setActiveSection('escaner');
-      showToast('En tu Samsung A36 ve a: Ajustes → Aplicaciones → Mis Finanzas → 3 puntos (⋮) → Permitir ajustes restringidos.');
-    }
-  };
 
   useEffect(() => {
     window.__onAndroidNotificationsBatch = (items) => {
@@ -736,6 +644,30 @@ export function App() {
     [transactions, credits, salaryProfile, recurringPayments, goals]
   );
 
+  useEffect(() => {
+    try {
+      const lastPurchase = transactions.find((t) => t.tipo === 'gasto') || transactions[0];
+      const payload = {
+        disponibleFormatted: formatCurrency(metrics.disponibleDespuesDePagosFijos || 0, currency),
+        gastosMesFormatted: formatCurrency(metrics.totalGastos || 0, currency),
+        fijosPendientesFormatted: formatCurrency(metrics.pagosFijosPendientes || 0, currency),
+        lastPurchaseTitle: lastPurchase
+          ? `${lastPurchase.desc} • ${formatCurrency(lastPurchase.monto, currency)}`
+          : 'Sin compras registradas hoy',
+        lastPurchaseMeta: lastPurchase
+          ? `${lastPurchase.entidad || 'Banco'} • ${lastPurchase.fecha} • ${lastPurchase.categoria}`
+          : 'Escáner 24/7 activo esperando notificaciones',
+        lastPurchaseRawDesc: lastPurchase ? lastPurchase.desc : '',
+        lastPurchaseRawAmount: lastPurchase ? formatCurrency(lastPurchase.monto, currency) : '$0',
+        lastPurchaseRawBank: lastPurchase ? lastPurchase.entidad || 'Banco' : '',
+        lastPurchaseRawTime: lastPurchase ? lastPurchase.fecha : '',
+      };
+      window.AndroidNativeBridge?.syncWidgetSummary?.(JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+  }, [metrics, transactions, currency]);
+
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const montoNum = safePositiveNumber(manMonto.replace(/[.,]/g, ''), 0);
@@ -766,7 +698,8 @@ export function App() {
     setTransactions((prev) => [nuevo, ...prev]);
     setManMonto('');
     setManDesc('');
-    showToast(`✅ Movimiento guardado: ${formatCurrency(montoNum, currency)}`);
+    setShowAddTxModal(false);
+    showToast(`Movimiento registrado: ${formatCurrency(montoNum, currency)}`);
   };
 
   const handleDepositSalaryNow = (amount: number, label: string) => {
@@ -775,13 +708,13 @@ export function App() {
         tipo: 'ganancia',
         categoria: 'Salario / Ingreso Principal',
         monto: amount,
-        desc: `💰 ${label}`,
-        entidad: 'Nómina / Salario',
+        desc: label,
+        entidad: 'Nómina',
         fuente: 'manual',
         esEsencial: true,
       },
     ]);
-    showToast(`💰 ¡Ingreso de ${formatCurrency(amount, currency)} sumado a tu historial!`);
+    showToast(`Ingreso de ${formatCurrency(amount, currency)} registrado.`);
   };
 
   const handleAddRecurringPayment = (item: Omit<RecurringPayment, 'id' | 'pagadoEsteMes'>) => {
@@ -791,7 +724,7 @@ export function App() {
       pagadoEsteMes: false,
     };
     setRecurringPayments((prev) => [...prev, nuevo]);
-    showToast(`📅 Pago fijo "${item.nombre}" agregado a tu mes.`);
+    showToast(`Pago fijo "${item.nombre}" agregado.`);
   };
 
   const handleTogglePayRecurring = (id: string) => {
@@ -817,19 +750,19 @@ export function App() {
           tipo: 'gasto',
           categoria: target.categoria,
           monto: target.monto,
-          desc: `✅ Pago mensual: ${target.nombre}`,
+          desc: `Pago mensual: ${target.nombre}`,
           entidad: 'Pago Fijo',
           fuente: 'manual',
           esEsencial: true,
         },
       ]);
-      showToast(`✅ "${target.nombre}" marcado como pagado y registrado en tus gastos.`);
+      showToast(`"${target.nombre}" marcado como pagado.`);
     }
   };
 
   const handleResetMonthlyPayments = () => {
     setRecurringPayments((prev) => prev.map((p) => ({ ...p, pagadoEsteMes: false })));
-    showToast('🔄 Todos tus pagos fijos quedaron listos para el nuevo mes.');
+    showToast('Pagos fijos reiniciados para el nuevo mes.');
   };
 
   const handleDeleteRecurringPayment = (id: string) => {
@@ -843,7 +776,7 @@ export function App() {
       montoAhorrado: 0,
     };
     setGoals((prev) => [...prev, nueva]);
-    showToast(`🎯 Meta "${goal.nombre}" creada.`);
+    showToast(`Meta "${goal.nombre}" creada.`);
   };
 
   const handleContributeGoal = (id: string, amount: number) => {
@@ -859,13 +792,13 @@ export function App() {
         tipo: 'gasto',
         categoria: 'Ahorro para Meta',
         monto: amount,
-        desc: `🎯 Ahorro abonado a meta: ${target.nombre}`,
-        entidad: 'Ahorro Personal',
+        desc: `Abono a meta: ${target.nombre}`,
+        entidad: 'Ahorro',
         fuente: 'manual',
         esEsencial: true,
       },
     ]);
-    showToast(`🎯 ¡Abonaste ${formatCurrency(amount, currency)} a tu meta "${target.nombre}"!`);
+    showToast(`Abonaste ${formatCurrency(amount, currency)} a "${target.nombre}".`);
   };
 
   const handleDeleteGoal = (id: string) => {
@@ -912,7 +845,7 @@ export function App() {
               tipo: (d.tipoMovimiento || d.tipo || 'gasto') as TransactionType,
               categoria: (d.categoria as TransactionCategory) || 'Otros',
               monto,
-              desc: sanitizeTextInput(d.desc || d.nombre || 'Movimiento desde Asesor', 90),
+              desc: sanitizeTextInput(d.desc || d.nombre || 'Movimiento', 90),
               entidad: sanitizeTextInput(d.entidad || 'General', 40),
               fuente: 'manual',
               esEsencial: Boolean(d.esEsencial ?? true),
@@ -946,7 +879,7 @@ export function App() {
           ? {
               ...t,
               tipo: 'gasto',
-              desc: t.desc.startsWith('✅') ? t.desc : `✅ Pagado: ${t.desc}`,
+              desc: t.desc.startsWith('Pagado:') ? t.desc : `Pagado: ${t.desc}`,
             }
           : t
       )
@@ -996,14 +929,14 @@ export function App() {
       tipo: 'pago_credito',
       categoria: 'Cuota Tarjeta / Crédito',
       monto: validAmount,
-      desc: `💳 Abono a deuda: ${sanitizeTextInput(nombre, 80)}`,
+      desc: `Abono a deuda: ${sanitizeTextInput(nombre, 80)}`,
       entidad: nombre,
       fuente: 'manual',
       esEsencial: true,
       fingerprint: buildPurchaseFingerprint(validAmount, 'pago_credito', nombre, nombre),
     };
     setTransactions((prev) => [pagoTx, ...prev]);
-    showToast(`💳 Abono de ${formatCurrency(validAmount, currency)} aplicado a ${nombre}.`);
+    showToast(`Abono de ${formatCurrency(validAmount, currency)} aplicado a ${nombre}.`);
   };
 
   const handleDeleteCredit = (id: string) => {
@@ -1011,7 +944,7 @@ export function App() {
   };
 
   const handleClearAll = () => {
-    if (window.confirm('¿Deseas borrar todos los datos registrados y dejar la aplicación completamente en cero?')) {
+    if (window.confirm('¿Deseas borrar todos los datos registrados y dejar la aplicación en cero?')) {
       setTransactions([]);
       setCredits([]);
       setSalaryProfile(DEFAULT_SALARY);
@@ -1022,7 +955,7 @@ export function App() {
       setBlockedOldCount(0);
       localStorage.removeItem('finanzas_v2_transactions');
       localStorage.removeItem('finanzas_v2_credits');
-      showToast('🧹 Todos los registros quedaron limpios en $0.');
+      showToast('Todos los registros quedaron en $0.');
     }
   };
 
@@ -1066,15 +999,15 @@ export function App() {
 
   if (isLocked && pinHash) {
     return (
-      <div className="min-h-screen bg-[#050811] flex items-center justify-center p-4">
-        <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-6 max-w-sm w-full text-center space-y-4 shadow-2xl">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center mx-auto">
-            <Lock className="w-6 h-6 text-indigo-400" />
+      <div className="min-h-screen bg-[#090b10] flex items-center justify-center p-4">
+        <div className="bg-[#111520] border border-white/10 rounded-3xl p-7 max-w-sm w-full text-center space-y-5 shadow-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center mx-auto">
+            <Lock className="w-5 h-5 text-indigo-400" />
           </div>
-          <h1 className="text-lg font-bold text-white">Mis Finanzas Protegidas</h1>
-          <p className="text-xs text-slate-400">
-            Ingresa tu PIN de 4 dígitos para desbloquear tu información financiera
-          </p>
+          <div>
+            <h1 className="text-lg font-semibold text-white">Mis Finanzas</h1>
+            <p className="text-xs text-slate-400 mt-1">Ingresa tu PIN de 4 dígitos</p>
+          </div>
           <input
             type="password"
             maxLength={4}
@@ -1084,7 +1017,7 @@ export function App() {
               setPinError('');
             }}
             placeholder="••••"
-            className="w-full text-center tracking-[0.6em] text-xl font-bold bg-slate-950 border border-slate-700 rounded-2xl py-3 text-white"
+            className="w-full text-center tracking-[0.6em] text-xl font-semibold bg-[#090b10] border border-white/15 rounded-2xl py-3 text-white focus:outline-none focus:border-indigo-500"
           />
           {pinError && <p className="text-xs text-rose-400">{pinError}</p>}
           <button
@@ -1094,10 +1027,10 @@ export function App() {
                 setIsLocked(false);
                 setPinInput('');
               } else {
-                setPinError('PIN incorrecto. Intenta nuevamente.');
+                setPinError('PIN incorrecto.');
               }
             }}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-2xl text-sm transition"
+            className="w-full bg-white hover:bg-slate-200 text-slate-950 font-semibold py-3 rounded-2xl text-sm transition"
           >
             Desbloquear
           </button>
@@ -1107,624 +1040,442 @@ export function App() {
   }
 
   const navItems: { id: MainSection; label: string; shortLabel: string; icon: any }[] = [
-    { id: 'mimes', label: 'Mi Mes y Movimientos', shortLabel: 'Mi Mes', icon: Wallet },
-    { id: 'escaner', label: 'Notificaciones y Plazo', shortLabel: 'Escáner', icon: Bell },
-    { id: 'calculos', label: 'Anillos, Promedios y Cuotas', shortLabel: 'Cálculos', icon: Calculator },
-    { id: 'creditos', label: 'Deudas y Vida Crediticia', shortLabel: 'Deudas', icon: CreditCard },
-    { id: 'asesor', label: 'Asesor IA y App A36', shortLabel: 'Asesor IA', icon: Bot },
+    { id: 'mimes', label: 'Resumen', shortLabel: 'Inicio', icon: Wallet },
+    { id: 'escaner', label: 'Notificaciones', shortLabel: 'Escáner', icon: Bell },
+    { id: 'calculos', label: 'Analítica', shortLabel: 'Analítica', icon: Calculator },
+    { id: 'creditos', label: 'Créditos', shortLabel: 'Créditos', icon: CreditCard },
+    { id: 'asesor', label: 'Asesor y App', shortLabel: 'Asesor', icon: Bot },
   ];
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-24 selection:bg-indigo-500 selection:text-white">
-      {/* Notificación flotante en vivo */}
+    <div className="min-h-screen bg-[#090b10] text-slate-100 pb-24">
+      {/* Toast minimalista */}
       {liveToast && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] bg-slate-900/95 backdrop-blur-xl border border-emerald-500/60 text-emerald-100 px-4 py-3 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2.5">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[90%] bg-[#161b28] border border-white/15 text-slate-100 px-4 py-3 rounded-2xl shadow-2xl text-xs font-medium flex items-center gap-2.5">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>{liveToast}</span>
         </div>
       )}
 
-      {/* Cabecera Ejecutiva Rediseñada */}
-      <header className="sticky top-0 z-30 bg-[#060913]/85 backdrop-blur-xl border-b border-slate-800/80 px-4 py-3">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-2">
+      {/* BARRA SUPERIOR MINIMALISTA */}
+      <header className="sticky top-0 z-30 bg-[#090b10]/85 backdrop-blur-xl border-b border-white/[0.06]">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-indigo-600/20">
-              <Wallet className="w-5 h-5 text-white" />
+            <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center">
+              <Wallet className="w-4 h-4 text-slate-950" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
-                  Mis Finanzas
-                </h1>
-                <span className="hidden md:inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-950/90 text-emerald-300 border border-emerald-500/30">
-                  <ShieldCheck className="w-3 h-3 text-emerald-400" /> Anti-Duplicados Activo
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Samsung Galaxy A36 5G • Corte notificaciones: <strong className="text-indigo-300">{cutoffLabel}</strong>
-              </p>
+              <span className="text-sm font-semibold text-white tracking-tight block">Mis Finanzas</span>
+              <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Corte: {cutoffLabel}
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          {/* Navegación Central en Escritorio */}
+          <nav className="hidden md:flex items-center gap-1 bg-[#111520] p-1 rounded-2xl border border-white/[0.06]">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const active = activeSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveSection(item.id)}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-medium transition ${
+                    active ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Controles derechos limpios */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowPermissionsBanner((v) => !v)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition ${
-                showPermissionsBanner
-                  ? 'bg-indigo-600 border-indigo-400 text-white'
-                  : 'bg-slate-900/90 hover:bg-slate-800 border-slate-800 text-indigo-300'
-              }`}
-              title="Permisos de lectura automática"
+              onClick={() => setShowAddTxModal(true)}
+              className="bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-semibold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition"
             >
-              <Bell className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Permisos</span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>Registrar</span>
             </button>
 
             <select
               value={currency}
               onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
               aria-label="Moneda"
-              className="bg-slate-900/90 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 font-bold"
+              className="bg-[#111520] border border-white/[0.08] rounded-xl px-2.5 py-1.5 text-xs text-slate-300 font-medium focus:outline-none"
             >
-              <option value="COP">🇨🇴 COP</option>
-              <option value="USD">🇺🇸 USD</option>
-              <option value="MXN">🇲🇽 MXN</option>
-              <option value="EUR">🇪🇺 EUR</option>
+              <option value="COP">COP</option>
+              <option value="USD">USD</option>
+              <option value="MXN">MXN</option>
+              <option value="EUR">EUR</option>
             </select>
 
             <button
               type="button"
               onClick={() => setShowPinSetup(!showPinSetup)}
-              className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs"
-              title="PIN de seguridad"
+              className="p-2 rounded-xl bg-[#111520] hover:bg-white/[0.08] border border-white/[0.08] text-slate-400 hover:text-white transition"
+              title="PIN de privacidad"
             >
               {pinHash ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleClearAll}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-rose-950/80 border border-slate-800 hover:border-rose-700 text-slate-400 hover:text-rose-200 text-xs font-semibold transition"
-              title="Reiniciar todos los datos en cero"
-            >
-              Reiniciar
             </button>
           </div>
         </div>
 
         {showPinSetup && (
-          <div className="max-w-5xl mx-auto mt-2.5 p-3 bg-slate-900 border border-slate-800 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-slate-300">🔒 Configura un PIN local de 4 dígitos:</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="password"
-                maxLength={4}
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
-                placeholder="4 dígitos"
-                className="w-24 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1 text-center text-white font-bold"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  if (newPin.length === 4) {
-                    const h = hashPin(newPin);
-                    localStorage.setItem(STORAGE_KEY_PIN, h);
-                    setPinHash(h);
-                    setNewPin('');
-                    setShowPinSetup(false);
-                  }
-                }}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-xl"
-              >
-                Guardar PIN
-              </button>
-              {pinHash && (
+          <div className="max-w-5xl mx-auto px-4 pb-3">
+            <div className="p-3 bg-[#111520] border border-white/10 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-slate-300">Configurar PIN de 4 dígitos:</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  maxLength={4}
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="4 dígitos"
+                  className="w-24 bg-[#090b10] border border-white/15 rounded-xl px-2.5 py-1.5 text-center text-white font-semibold"
+                />
                 <button
                   type="button"
                   onClick={() => {
-                    localStorage.removeItem(STORAGE_KEY_PIN);
-                    setPinHash(null);
-                    setShowPinSetup(false);
+                    if (newPin.length === 4) {
+                      const h = hashPin(newPin);
+                      localStorage.setItem(STORAGE_KEY_PIN, h);
+                      setPinHash(h);
+                      setNewPin('');
+                      setShowPinSetup(false);
+                    }
                   }}
-                  className="bg-rose-950 text-rose-300 border border-rose-800 px-2.5 py-1 rounded-xl"
+                  className="bg-white text-slate-950 font-semibold px-3 py-1.5 rounded-xl"
                 >
-                  Quitar PIN
+                  Guardar
                 </button>
-              )}
+                {pinHash && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      localStorage.removeItem(STORAGE_KEY_PIN);
+                      setPinHash(null);
+                      setShowPinSetup(false);
+                    }}
+                    className="text-rose-400 px-2.5 py-1.5"
+                  >
+                    Quitar PIN
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleClearAll}
+                  className="text-slate-400 hover:text-rose-400 px-2.5 py-1.5 border-l border-white/10"
+                >
+                  Borrar datos
+                </button>
+              </div>
             </div>
           </div>
         )}
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 pt-4 space-y-5">
-        {/* Panel Desplegable de Permisos Rápidos (Oculto por defecto para mantener el diseño limpio) */}
-        {showPermissionsBanner && (
-          <section className="bg-slate-900/95 border border-indigo-500/40 rounded-3xl p-4 space-y-3 shadow-xl">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Bell className="w-4 h-4 text-indigo-400 shrink-0" />
-                <span className="text-xs font-bold text-white">
-                  Configuración Rápida de Permisos en Samsung Galaxy A36 5G
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowPermissionsBanner(false)}
-                className="text-[11px] text-slate-400 hover:text-white px-2.5 py-1 rounded-lg bg-slate-950"
-              >
-                Cerrar
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={handleGlobalRequestPermissions}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
-              >
-                <Bell className="w-3.5 h-3.5 shrink-0" />
-                <span>1. Autorizar Permisos</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleGlobalOpenAppDetails}
-                className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
-              >
-                <Smartphone className="w-3.5 h-3.5 shrink-0" />
-                <span>2. Ajustes Restringidos</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleGlobalOpenNotificationSettings}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow transition"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                <span>3. Acceso a Notificaciones</span>
-              </button>
-            </div>
-
-            {permissionStatusText && (
-              <div className="text-[11px] text-emerald-300 font-semibold bg-slate-950 border border-emerald-500/30 rounded-xl px-3 py-2">
-                {permissionStatusText}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* HERO DASHBOARD REDISEÑADO: Bóveda Financiera + Indicadores Ejecutivos */}
-        <section className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
-          {/* Tarjeta Principal: Disponible Real y Estado del Filtro de Notificaciones */}
-          <div className="lg:col-span-5 bg-gradient-to-br from-indigo-950/80 via-slate-900 to-slate-950 border border-indigo-500/30 rounded-3xl p-5 flex flex-col justify-between shadow-xl relative overflow-hidden">
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-300">
-                  Saldo Disponible Real
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('escaner')}
-                  className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-950/90 hover:bg-indigo-950 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 transition"
-                  title="Configurar desde qué fecha leer notificaciones y filtro anti-duplicados"
-                >
-                  <Calendar className="w-3 h-3 text-indigo-400" />
-                  <span>Desde: {cutoffLabel}</span>
-                </button>
-              </div>
-
-              <div
-                className={`text-2xl sm:text-3xl font-black tracking-tight pt-1 ${
-                  metrics.disponibleDespuesDePagosFijos >= 0 ? 'text-white' : 'text-rose-400'
-                }`}
-              >
-                {formatCurrency(metrics.disponibleDespuesDePagosFijos, currency)}
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Libre después de descontar tus compras únicas ({formatCurrency(metrics.totalGastos, currency)}) y pagos fijos pendientes ({formatCurrency(metrics.pagosFijosPendientes, currency)})
-              </p>
-            </div>
-
-            <div className="mt-4 pt-3 border-t border-slate-800/80 space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-slate-400">Uso de tus ingresos del mes</span>
-                <span className="font-bold text-slate-200">{gastoRatioPct}%</span>
-              </div>
-              <div className="w-full h-2 rounded-full bg-slate-950 overflow-hidden p-0.5 border border-slate-800">
-                <div
-                  className={`h-full rounded-full transition-all duration-500 ${
-                    gastoRatioPct > 85
-                      ? 'bg-rose-500'
-                      : gastoRatioPct > 65
-                      ? 'bg-amber-400'
-                      : 'bg-gradient-to-r from-indigo-500 to-emerald-400'
-                  }`}
-                  style={{ width: `${Math.max(4, gastoRatioPct)}%` }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
-                <span className="flex items-center gap-1 text-emerald-400 font-semibold">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  {blockedDuplicatesCount} duplicadas bloqueadas
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('escaner')}
-                  className="text-indigo-300 hover:text-white underline font-semibold"
-                >
-                  Cambiar fecha límite →
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* 4 Tarjetas Ejecutivas de Métricas */}
-          <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-2 gap-3">
-            <div className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Salario / Ingresos
-                </span>
-                <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                </div>
-              </div>
-              <div className="my-1">
-                <div className="text-lg sm:text-xl font-extrabold text-emerald-400">
-                  {formatCurrency(metrics.totalGanancias, currency)}
-                </div>
-                <span className="text-[11px] text-slate-500">
-                  {salaryProfile.salarioMensualNeto > 0
-                    ? `Sueldo base: ${formatCurrency(salaryProfile.salarioMensualNeto, currency)}`
-                    : 'Configura tu sueldo en Mi Mes'}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Compras y Gastos
-                </span>
-                <div className="w-8 h-8 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center">
-                  <TrendingDown className="w-4 h-4 text-rose-400" />
-                </div>
-              </div>
-              <div className="my-1">
-                <div className="text-lg sm:text-xl font-extrabold text-rose-400">
-                  {formatCurrency(metrics.totalGastos, currency)}
-                </div>
-                <span className="text-[11px] text-slate-500">
-                  Pagos fijos pend: {formatCurrency(metrics.pagosFijosPendientes, currency)}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Deudas y Cupos
-                </span>
-                <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
-                  <CreditCard className="w-4 h-4 text-amber-400" />
-                </div>
-              </div>
-              <div className="my-1">
-                <div className="text-lg sm:text-xl font-extrabold text-amber-400">
-                  {formatCurrency(metrics.deudaTotalObligaciones, currency)}
-                </div>
-                <span className="text-[11px] text-slate-500">
-                  Score crediticio: <strong className="text-slate-300">{metrics.scoreEstimado} pts</strong>
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Metas de Ahorro
-                </span>
-                <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center">
-                  <Target className="w-4 h-4 text-indigo-400" />
-                </div>
-              </div>
-              <div className="my-1">
-                <div className="text-lg sm:text-xl font-extrabold text-indigo-300">
-                  {formatCurrency(metrics.totalMetasAhorrado, currency)}
-                </div>
-                <span className="text-[11px] text-slate-500">
-                  Meta total: {formatCurrency(metrics.totalMetasObjetivo, currency)}
-                </span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Barra de Navegación Superior (Escritorio / Tablet) */}
-        <nav className="hidden sm:flex overflow-x-auto gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800/90 shadow-inner">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeSection === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveSection(item.id)}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                  active
-                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-md'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {item.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* PESTAÑA 1: MI MES (SALARIO, COSAS QUE PAGO, METAS Y MOVIMIENTOS) */}
+      <main className="max-w-5xl mx-auto px-4 pt-5 space-y-6">
+        {/* PESTAÑA 1: INICIO / MI MES */}
         {activeSection === 'mimes' && (
-          <div className="space-y-5">
-            <SalaryBillsGoalsCenter
-              currency={currency}
-              salaryProfile={salaryProfile}
-              onUpdateSalary={(profile) => {
-                setSalaryProfile(profile);
-                showToast(`✅ Salario mensual guardado: ${formatCurrency(profile.salarioMensualNeto, currency)}`);
-              }}
-              onDepositSalaryNow={handleDepositSalaryNow}
-              recurringPayments={recurringPayments}
-              onAddRecurringPayment={handleAddRecurringPayment}
-              onTogglePayRecurring={handleTogglePayRecurring}
-              onResetMonthlyPayments={handleResetMonthlyPayments}
-              onDeleteRecurringPayment={handleDeleteRecurringPayment}
-              goals={goals}
-              onAddGoal={handleAddGoal}
-              onContributeGoal={handleContributeGoal}
-              onDeleteGoal={handleDeleteGoal}
-            />
+          <div className="space-y-6">
+            {/* TARJETA UNIFICADA DE BALANCE (Estilo Neobanco Limpio) */}
+            <section className="bg-[#111520] border border-white/[0.07] rounded-3xl p-6 sm:p-7">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <span className="text-xs font-medium text-slate-400 block">Disponible Real</span>
+                  <div
+                    className={`text-3xl sm:text-4xl font-bold tracking-tight tabular-nums mt-1 ${
+                      metrics.disponibleDespuesDePagosFijos >= 0 ? 'text-white' : 'text-rose-400'
+                    }`}
+                  >
+                    {formatCurrency(metrics.disponibleDespuesDePagosFijos, currency)}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Libre tras descontar compras registradas y pagos fijos del mes
+                  </p>
+                </div>
 
-            {/* Registro Manual de Compras, Ingresos o Gastos Diarios */}
-            <form
-              onSubmit={handleManualSubmit}
-              className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 sm:p-5 space-y-3.5 shadow-lg"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-extrabold text-white flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-emerald-400" />
-                  Anexar Compra o Movimiento Manual
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('escaner')}
-                  className="text-xs text-indigo-300 hover:text-indigo-200 font-semibold flex items-center gap-1"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Configurar lectura de notificaciones y fecha límite →
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection('escaner')}
+                    className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 border border-white/[0.07] transition"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Sin duplicados ({blockedDuplicatesCount})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection('escaner')}
+                    className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 border border-white/[0.07] transition"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Desde: {cutoffLabel}</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">Tipo</label>
-                  <select
-                    value={manTipo}
-                    onChange={(e) => {
-                      const t = e.target.value as TransactionType;
-                      setManTipo(t);
-                      setManCategoria(CATEGORIES_BY_TYPE[t][0]);
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  >
-                    <option value="gasto">🛒 Compra / Gasto</option>
-                    <option value="ganancia">💰 Ganancia / Ingreso Extra</option>
-                    <option value="deuda">⏳ Deuda / Cuota Pendiente</option>
-                    <option value="trading">📈 Trading / Inversión</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">Categoría</label>
-                  <select
-                    value={manCategoria}
-                    onChange={(e) => setManCategoria(e.target.value as TransactionCategory)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  >
-                    {CATEGORIES_BY_TYPE[manTipo].map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">Monto ($)</label>
-                  <input
-                    type="number"
-                    required
-                    value={manMonto}
-                    onChange={(e) => setManMonto(e.target.value)}
-                    placeholder="Ej: 45000"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-bold"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">Banco / Medio</label>
-                  <input
-                    type="text"
-                    value={manEntidad}
-                    onChange={(e) => setManEntidad(e.target.value)}
-                    placeholder="Nequi, Bancolombia, Efectivo..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+              {/* Barra sutil de consumo mensual */}
+              <div className="mt-5">
+                <div className="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      gastoRatioPct > 85 ? 'bg-rose-500' : gastoRatioPct > 65 ? 'bg-amber-400' : 'bg-emerald-400'
+                    }`}
+                    style={{ width: `${Math.max(2, gastoRatioPct)}%` }}
                   />
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <input
-                  type="text"
-                  required
-                  value={manDesc}
-                  onChange={(e) => setManDesc(e.target.value)}
-                  placeholder="Descripción del comercio o compra (ej. Supermercado D1, Restaurante, Gasolina)"
-                  className="flex-1 min-w-[220px] bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white"
-                />
+              {/* Resumen en 4 columnas limpias dentro de la misma tarjeta */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-5 border-t border-white/[0.06]">
+                <div>
+                  <span className="text-xs text-slate-400 flex items-center gap-1">
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> Ingresos
+                  </span>
+                  <strong className="text-base sm:text-lg font-semibold text-white tabular-nums mt-0.5 block">
+                    {formatCurrency(metrics.totalGanancias, currency)}
+                  </strong>
+                </div>
 
-                {manTipo === 'gasto' && (
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={manEsEsencial}
-                      onChange={(e) => setManEsEsencial(e.target.checked)}
-                      className="accent-indigo-500"
-                    />
-                    Gasto Esencial
-                  </label>
-                )}
+                <div>
+                  <span className="text-xs text-slate-400 flex items-center gap-1">
+                    <TrendingDown className="w-3.5 h-3.5 text-rose-400" /> Compras
+                  </span>
+                  <strong className="text-base sm:text-lg font-semibold text-white tabular-nums mt-0.5 block">
+                    {formatCurrency(metrics.totalGastos, currency)}
+                  </strong>
+                </div>
 
-                <button
-                  type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow transition"
-                >
-                  Guardar Movimiento
-                </button>
+                <div>
+                  <span className="text-xs text-slate-400">Pagos Fijos Pend.</span>
+                  <strong className="text-base sm:text-lg font-semibold text-slate-200 tabular-nums mt-0.5 block">
+                    {formatCurrency(metrics.pagosFijosPendientes, currency)}
+                  </strong>
+                </div>
+
+                <div>
+                  <span className="text-xs text-slate-400">Deuda Total</span>
+                  <strong className="text-base sm:text-lg font-semibold text-amber-400 tabular-nums mt-0.5 block">
+                    {formatCurrency(metrics.deudaTotalObligaciones, currency)}
+                  </strong>
+                </div>
               </div>
-            </form>
+            </section>
 
-            {/* Historial de Movimientos Registrados (Sin duplicados) */}
-            <div className="bg-slate-900/90 border border-slate-800/90 rounded-3xl p-4 sm:p-5 space-y-3.5 shadow-lg">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                <div className="flex overflow-x-auto gap-1.5">
-                  {[
-                    { id: 'todos', label: `Todos (${transactions.length})` },
-                    { id: 'gasto', label: '🛒 Compras' },
-                    { id: 'ganancia', label: '💰 Ingresos' },
-                    { id: 'deuda', label: '⏳ Deudas' },
-                    { id: 'trading', label: '📈 Inversiones' },
-                  ].map((t) => (
+            {/* SELECTOR DE SUB-SECCIÓN (Evita amontonar todo en una sola pantalla) */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex p-1 rounded-2xl bg-[#111520] border border-white/[0.06] overflow-x-auto max-w-full">
+                {[
+                  { id: 'movimientos', label: `Movimientos (${transactions.length})` },
+                  { id: 'pagos', label: `Pagos Fijos (${recurringPayments.length})` },
+                  { id: 'salario', label: 'Mi Salario' },
+                  { id: 'metas', label: `Metas (${goals.length})` },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setHomeSubTab(tab.id as HomeSubTab)}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+                      homeSubTab === tab.id
+                        ? 'bg-white text-slate-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {homeSubTab === 'movimientos' && (
+                <div className="flex items-center gap-2">
+                  {transactions.length > 1 && (
                     <button
-                      key={t.id}
                       type="button"
-                      onClick={() => setFiltroTipo(t.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition ${
-                        filtroTipo === t.id
-                          ? 'bg-indigo-600 text-white shadow'
-                          : 'text-slate-400 hover:text-white bg-slate-950 border border-slate-800'
-                      }`}
+                      onClick={handleCleanDuplicatesNow}
+                      className="px-3 py-2 rounded-xl bg-[#111520] hover:bg-white/[0.08] text-slate-300 border border-white/[0.07] text-xs font-medium flex items-center gap-1.5 transition"
+                      title="Eliminar compras duplicadas"
                     >
-                      {t.label}
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Depurar duplicados</span>
                     </button>
-                  ))}
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowAddTxModal(true)}
+                    className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-200 text-slate-950 text-xs font-semibold flex items-center gap-1.5 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Nuevo Movimiento</span>
+                  </button>
                 </div>
+              )}
+            </div>
 
-                <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
-                  <div className="relative flex-1 sm:w-56">
-                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            {/* SUB-VISTA 1: LISTA LIMPIA DE MOVIMIENTOS */}
+            {homeSubTab === 'movimientos' && (
+              <div className="bg-[#111520] border border-white/[0.07] rounded-3xl p-5 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex overflow-x-auto gap-1.5">
+                    {[
+                      { id: 'todos', label: 'Todos' },
+                      { id: 'gasto', label: 'Compras' },
+                      { id: 'ganancia', label: 'Ingresos' },
+                      { id: 'deuda', label: 'Deudas' },
+                    ].map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setFiltroTipo(t.id)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium transition ${
+                          filtroTipo === t.id
+                            ? 'bg-indigo-500 text-white'
+                            : 'text-slate-400 hover:text-white bg-[#0b0e17]'
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative w-full sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={busqueda}
                       onChange={(e) => setBusqueda(e.target.value)}
                       placeholder="Buscar comercio o banco..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white"
+                      className="w-full bg-[#0b0e17] border border-white/[0.07] focus:border-indigo-500 focus:outline-none rounded-xl pl-9 pr-3 py-1.5 text-xs text-white"
                     />
                   </div>
+                </div>
 
-                  {transactions.length > 1 && (
+                {filteredTransactions.length === 0 ? (
+                  <div className="text-center py-12 space-y-3">
+                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                      Aún no hay movimientos registrados. Tus notificaciones bancarias nuevas aparecerán aquí automáticamente sin duplicarse.
+                    </p>
                     <button
                       type="button"
-                      onClick={handleCleanDuplicatesNow}
-                      className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-indigo-950 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 shrink-0 transition"
-                      title="Revisar y eliminar cualquier compra anotada más de una vez"
+                      onClick={() => setShowAddTxModal(true)}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
                     >
-                      <SlidersHorizontal className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Depurar Duplicados</span>
+                      <Plus className="w-3.5 h-3.5" /> Registrar primer movimiento
                     </button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/[0.06]">
+                    {filteredTransactions.map((m) => {
+                      const isIncome = m.tipo === 'ganancia';
+                      return (
+                        <div
+                          key={m.id}
+                          className="py-3.5 flex items-center justify-between gap-3 text-xs first:pt-1 last:pb-1"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={`w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 ${
+                                isIncome
+                                  ? 'bg-emerald-500/10 text-emerald-400'
+                                  : 'bg-white/[0.05] text-slate-300'
+                              }`}
+                            >
+                              {isIncome ? (
+                                <ArrowUpRight className="w-4 h-4" />
+                              ) : (
+                                <ArrowDownRight className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <strong className="text-white text-sm font-medium truncate">
+                                  {m.desc}
+                                </strong>
+                                {m.entidad && (
+                                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-white/[0.05] text-slate-400 shrink-0">
+                                    {m.entidad}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
+                                <span>{m.categoria}</span>
+                                <span>•</span>
+                                <span>{m.fecha}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            <strong
+                              className={`text-sm font-semibold tabular-nums ${
+                                isIncome ? 'text-emerald-400' : 'text-white'
+                              }`}
+                            >
+                              {isIncome ? '+' : '-'}
+                              {formatCurrency(m.monto, currency)}
+                            </strong>
+
+                            {m.tipo === 'deuda' && (
+                              <button
+                                type="button"
+                                onClick={() => handleMarkDebtPaid(m.id)}
+                                className="bg-emerald-500/15 text-emerald-300 text-[11px] font-semibold px-2.5 py-1 rounded-lg"
+                              >
+                                Pagar
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTransaction(m.id)}
+                              className="text-slate-600 hover:text-rose-400 p-1 transition"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
+            )}
 
-              {filteredTransactions.length === 0 ? (
-                <div className="text-center py-10 space-y-2">
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    No hay movimientos registrados con este filtro. Registra tu salario arriba o configura el lector automático con fecha límite en la pestaña <strong>Escáner</strong>.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {filteredTransactions.map((m) => (
-                    <div
-                      key={m.id}
-                      className="p-3.5 rounded-2xl bg-slate-950/90 border border-slate-800/80 hover:border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs transition"
-                    >
-                      <div className="space-y-1 pr-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <strong className="text-white text-sm font-bold">{m.desc}</strong>
-                          {m.entidad && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-800">
-                              {m.entidad}
-                            </span>
-                          )}
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-950/80 text-indigo-300 border border-indigo-500/20">
-                            {m.categoria}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-slate-500 flex items-center gap-2">
-                          <span>{m.fecha}</span>
-                          <span>•</span>
-                          <span className="uppercase font-semibold">{m.fuente}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2.5">
-                        <strong
-                          className={`text-sm font-extrabold ${
-                            m.tipo === 'ganancia'
-                              ? 'text-emerald-400'
-                              : m.tipo === 'deuda'
-                              ? 'text-amber-400'
-                              : m.tipo === 'trading'
-                              ? 'text-indigo-400'
-                              : 'text-rose-400'
-                          }`}
-                        >
-                          {m.tipo === 'ganancia' ? '+' : '-'}
-                          {formatCurrency(m.monto, currency)}
-                        </strong>
-
-                        {m.tipo === 'deuda' && (
-                          <button
-                            type="button"
-                            onClick={() => handleMarkDebtPaid(m.id)}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1"
-                          >
-                            <CheckCircle2 className="w-3 h-3" /> Pagar
-                          </button>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTransaction(m.id)}
-                          className="text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-950/40 transition"
-                          title="Eliminar registro"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {/* SUB-VISTAS 2, 3 Y 4: PAGOS FIJOS, SALARIO O METAS */}
+            {homeSubTab !== 'movimientos' && (
+              <SalaryBillsGoalsCenter
+                currency={currency}
+                salaryProfile={salaryProfile}
+                onUpdateSalary={(profile) => {
+                  setSalaryProfile(profile);
+                  showToast(`Salario actualizado: ${formatCurrency(profile.salarioMensualNeto, currency)}`);
+                }}
+                onDepositSalaryNow={handleDepositSalaryNow}
+                recurringPayments={recurringPayments}
+                onAddRecurringPayment={handleAddRecurringPayment}
+                onTogglePayRecurring={handleTogglePayRecurring}
+                onResetMonthlyPayments={handleResetMonthlyPayments}
+                onDeleteRecurringPayment={handleDeleteRecurringPayment}
+                goals={goals}
+                onAddGoal={handleAddGoal}
+                onContributeGoal={handleContributeGoal}
+                onDeleteGoal={handleDeleteGoal}
+                forcedView={homeSubTab}
+              />
+            )}
           </div>
         )}
 
-        {/* PESTAÑA 2: ESCÁNER MULTIMODAL, PLAZO DE FECHA Y FILTRO ANTI-DUPLICADOS */}
+        {/* PESTAÑA 2: ESCÁNER Y CONTROL DE NOTIFICACIONES */}
         {activeSection === 'escaner' && (
           <ScannerCenter
             currency={currency}
@@ -1748,7 +1499,7 @@ export function App() {
           />
         )}
 
-        {/* PESTAÑA 3: CÁLCULOS, GRÁFICO DE ANILLOS RECHARTS, PROMEDIOS Y SIMULADOR */}
+        {/* PESTAÑA 3: ANALÍTICA Y SIMULADOR */}
         {activeSection === 'calculos' && (
           <CalculatorsCenter
             currency={currency}
@@ -1765,7 +1516,7 @@ export function App() {
           />
         )}
 
-        {/* PESTAÑA 4: DEUDAS, TARJETAS Y VIDA CREDITICIA */}
+        {/* PESTAÑA 4: DEUDAS Y VIDA CREDITICIA */}
         {activeSection === 'creditos' && (
           <CreditLifeCenter
             currency={currency}
@@ -1782,7 +1533,7 @@ export function App() {
           />
         )}
 
-        {/* PESTAÑA 5: ASESOR IA CONVERSACIONAL Y DESCARGA SAMSUNG A36 5G */}
+        {/* PESTAÑA 5: ASESOR IA Y DESCARGA */}
         {activeSection === 'asesor' && (
           <AdvisorAndMobileCenter
             currency={currency}
@@ -1800,8 +1551,133 @@ export function App() {
         )}
       </main>
 
-      {/* Barra de Navegación Inferior Fija para uso cómodo en el Samsung Galaxy A36 5G */}
-      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#060913]/95 backdrop-blur-xl border-t border-slate-800/90 px-2 py-1.5 flex items-center justify-around">
+      {/* MODAL LIMPIO PARA REGISTRAR MOVIMIENTO MANUAL */}
+      {showAddTxModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <form
+            onSubmit={handleManualSubmit}
+            className="bg-[#111520] border border-white/10 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-white">Nuevo Movimiento</h2>
+              <button
+                type="button"
+                onClick={() => setShowAddTxModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white bg-white/[0.05]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Tipo</label>
+                <select
+                  value={manTipo}
+                  onChange={(e) => {
+                    const t = e.target.value as TransactionType;
+                    setManTipo(t);
+                    setManCategoria(CATEGORIES_BY_TYPE[t][0]);
+                  }}
+                  className="w-full bg-[#090b10] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white"
+                >
+                  <option value="gasto">Compra / Gasto</option>
+                  <option value="ganancia">Ingreso</option>
+                  <option value="deuda">Deuda</option>
+                  <option value="trading">Inversión</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Monto</label>
+                <input
+                  type="number"
+                  required
+                  value={manMonto}
+                  onChange={(e) => setManMonto(e.target.value)}
+                  placeholder="45000"
+                  className="w-full bg-[#090b10] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-semibold tabular-nums"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Descripción o Comercio</label>
+              <input
+                type="text"
+                required
+                value={manDesc}
+                onChange={(e) => setManDesc(e.target.value)}
+                placeholder="Ej: Supermercado D1, Almuerzo, Uber"
+                className="w-full bg-[#090b10] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Categoría</label>
+                <select
+                  value={manCategoria}
+                  onChange={(e) => setManCategoria(e.target.value as TransactionCategory)}
+                  className="w-full bg-[#090b10] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white"
+                >
+                  {CATEGORIES_BY_TYPE[manTipo].map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Banco / Medio</label>
+                <input
+                  type="text"
+                  value={manEntidad}
+                  onChange={(e) => setManEntidad(e.target.value)}
+                  placeholder="Nequi, Bancolombia..."
+                  className="w-full bg-[#090b10] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white"
+                />
+              </div>
+            </div>
+
+            {manTipo === 'gasto' && (
+              <label className="flex items-center gap-2 text-xs text-slate-300 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={manEsEsencial}
+                  onChange={(e) => setManEsEsencial(e.target.checked)}
+                  className="accent-indigo-500"
+                />
+                Es un gasto esencial (Necesidad)
+              </label>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddTxModal(false)}
+                className="px-4 py-2.5 rounded-xl text-xs text-slate-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="bg-white hover:bg-slate-200 text-slate-950 font-semibold text-xs px-5 py-2.5 rounded-xl transition"
+              >
+                Guardar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* BARRA INFERIOR MÓVIL LIMPIA */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-[#090b10]/95 backdrop-blur-xl border-t border-white/[0.07] px-2 py-2 flex items-center justify-around">
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = activeSection === item.id;
@@ -1810,11 +1686,11 @@ export function App() {
               key={item.id}
               type="button"
               onClick={() => setActiveSection(item.id)}
-              className={`flex flex-col items-center justify-center py-1.5 px-3 rounded-2xl text-[10px] font-bold transition ${
-                active ? 'text-white bg-indigo-600 shadow-md' : 'text-slate-400 hover:text-slate-200'
+              className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl text-[10px] font-medium transition ${
+                active ? 'text-white' : 'text-slate-500 hover:text-slate-300'
               }`}
             >
-              <Icon className="w-4 h-4 mb-0.5" />
+              <Icon className={`w-4 h-4 mb-1 ${active ? 'text-indigo-400' : ''}`} />
               <span>{item.shortLabel}</span>
             </button>
           );

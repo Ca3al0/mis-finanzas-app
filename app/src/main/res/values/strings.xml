@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Mis Finanzas y Vida Crediticia</string>
+    <string name="notif_listener_label">Mis Finanzas Lector Automático</string>
+    <string name="widget_description">Muestra tu Disponible Real, última compra detectada y permite hablar o preguntar al Agente Financiero desde tu pantalla de inicio.</string>
+    <string name="widget_agent_activity_label">Agente Rápido Mis Finanzas</string>
+</resources>

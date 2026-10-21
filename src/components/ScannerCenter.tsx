@@ -13,9 +13,7 @@ import {
   Lightbulb,
   CreditCard,
   Trash2,
-  Radio,
   Settings,
-  Zap,
   History,
   Search,
   X,
@@ -24,8 +22,6 @@ import {
   RotateCcw,
   ShieldCheck,
   Calendar,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import {
   AIAnalysisResult,
@@ -84,6 +80,8 @@ declare global {
       getCapturedNotificationsJson?: () => string;
       clearCapturedNotifications?: () => void;
       setMinCaptureTimestamp?: (timestampMs: number) => void;
+      syncWidgetSummary?: (jsonPayload: string) => void;
+      openWidgetAgentDialog?: (initialPrompt?: string) => void;
     };
   }
 }
@@ -118,13 +116,12 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
   const [warningBanner, setWarningBanner] = useState<string | null>(null);
   const [autoSaveOnDetect, setAutoSaveOnDetect] = useState<boolean>(true);
   const [autoClipboardEnabled] = useState<boolean>(true);
-  const [hasNativeAndroidBridge, setHasNativeAndroidBridge] = useState<boolean>(false);
   const [nativePermissionGranted, setNativePermissionGranted] = useState<boolean>(false);
   const [webNotifPerm, setWebNotifPerm] = useState<string>(
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
   const [clipboardPermGranted, setClipboardPermGranted] = useState<boolean>(false);
-  const [showPermissionsPanel, setShowPermissionsPanel] = useState<boolean>(false);
+  const [showPermissionsModal, setShowPermissionsModal] = useState<boolean>(false);
 
   // Estado del Modal de Historial de los últimos 30 días
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
@@ -143,7 +140,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         setWebNotifPerm(Notification.permission);
       }
       if (window.AndroidNativeBridge) {
-        setHasNativeAndroidBridge(true);
         try {
           setNativePermissionGranted(
             Boolean(window.AndroidNativeBridge.isNotificationListenerEnabled?.() || window.__nativeListenerGranted)
@@ -164,7 +160,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     };
   }, []);
 
-  // Sincronizar fecha límite con el puente nativo Android cada vez que cambie la política
   useEffect(() => {
     const cutoff = getPolicyCutoffTimestamp(capturePolicy);
     try {
@@ -174,7 +169,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
   }, [capturePolicy]);
 
-  // Filtrar registros de los últimos 30 días
   const recent30DaysHistory = useMemo(() => {
     const cutoff = Date.now() - THIRTY_DAYS_MS;
     return processedHistory
@@ -217,7 +211,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     return { gastos, ingresos, count: filteredHistoryRecords.length };
   }, [filteredHistoryRecords]);
 
-  // Valida plazo y anti-duplicados antes de guardar movimientos extraídos
   const validateAndSaveExtractedResult = (
     res: AIAnalysisResult,
     rawText: string,
@@ -230,16 +223,14 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       return { savedCount: 0 };
     }
 
-    // 1. Validar si la notificación es más antigua que la fecha/plazo configurado por el usuario
     if (capturePolicy.ignorarNotificacionesAntiguas && (source === 'notificacion' || source === 'automatico')) {
       const oldCheck = isNotificationOlderThanPolicy(rawText, eventTimestampMs, capturePolicy);
       if (oldCheck.isOld) {
-        setWarningBanner(`⏳ Ignorada por antigüedad: ${oldCheck.reason}. No se sumó a tus gastos.`);
+        setWarningBanner(`Notificación omitida por fecha límite: ${oldCheck.reason}`);
         return { savedCount: 0, blockedReason: oldCheck.reason };
       }
     }
 
-    // 2. Filtrar movimientos que ya hayan sido registrados por otra notificación de la misma compra
     const uniqueMovements: ExtractedTransactionItem[] = [];
     let duplicateReason = '';
 
@@ -268,11 +259,10 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
 
     if (res.movimientosDetectados.length > 0 && uniqueMovements.length === 0) {
-      setWarningBanner(`🛡️ Compra repetida bloqueada: ${duplicateReason}. No se volvió a descontar.`);
+      setWarningBanner(`Compra duplicada bloqueada: ${duplicateReason}`);
       return { savedCount: 0, blockedReason: duplicateReason };
     }
 
-    // 3. Registrar en el historial de 30 días y en transacciones
     const firstMov = uniqueMovements[0];
     const total =
       uniqueMovements.reduce((acc, m) => acc + m.monto, 0) || res.datosExtractoCredito?.saldoActual || 0;
@@ -311,7 +301,6 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     return { savedCount: 0 };
   };
 
-  // Auto-lectura de notificación copiada al abrir o tocar la aplicación (con filtro de fecha y anti-duplicados)
   useEffect(() => {
     if (!autoClipboardEnabled) return;
     const handleVisibilityOrFocus = async () => {
@@ -338,7 +327,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
             const outcome = validateAndSaveExtractedResult(res, clip, 'notificacion', Date.now());
             if (outcome.savedCount > 0) {
               setSavedBanner(
-                `📲 Compra detectada y registrada (${formatCurrency(
+                `Compra detectada y registrada (${formatCurrency(
                   res.movimientosDetectados[0].monto,
                   currency
                 )})`
@@ -382,7 +371,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         const perm = await Notification.requestPermission();
         setWebNotifPerm(perm);
         if (perm === 'granted') {
-          statusMessages.push('Notificaciones concedidas ✓');
+          statusMessages.push('Notificaciones concedidas');
         }
       } catch {
         // ignore
@@ -393,7 +382,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       try {
         const clip = (await navigator.clipboard.readText())?.trim();
         setClipboardPermGranted(true);
-        statusMessages.push('Portapapeles activo ✓');
+        statusMessages.push('Portapapeles activo');
         if (
           clip &&
           clip.length >= 8 &&
@@ -418,8 +407,8 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
     setSavedBanner(
       statusMessages.length > 0
-        ? `🔔 Permisos verificados: ${statusMessages.join(' • ')}`
-        : '🔔 Solicitud enviada. Activa también "3. Abrir Acceso a Notificaciones".'
+        ? `Permisos verificados: ${statusMessages.join(' • ')}`
+        : 'Solicitud enviada. Activa también "Acceso a Notificaciones".'
     );
   };
 
@@ -509,9 +498,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
     }
 
     if (foundCount > 0) {
-      setSavedBanner(`✅ ¡Se revisaron ${foundCount} notificación(es) aplicando filtro anti-duplicados y fecha!`);
+      setSavedBanner(`Se procesaron ${foundCount} notificación(es) aplicando filtro de fecha y anti-duplicados.`);
     } else {
-      setSavedBanner('📡 Escaneo al día: No hay compras nuevas pendientes por registrar.');
+      setSavedBanner('Sincronizado: No hay notificaciones nuevas pendientes.');
     }
   };
 
@@ -529,16 +518,14 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         if (res.movimientosDetectados.length > 0 || res.datosExtractoCredito) {
           const outcome = validateAndSaveExtractedResult(res, text, activeMode, Date.now());
           if (outcome.savedCount > 0) {
-            setSavedBanner(
-              `✅ ¡Pegado y registrado sin duplicados! (${outcome.savedCount} compra/movimiento único)`
-            );
+            setSavedBanner(`Registrado sin duplicados (${outcome.savedCount} compra única).`);
           }
         }
       } else {
-        alert('Tu portapapeles está vacío. Copia primero el texto de la notificación o escríbela en el cuadro.');
+        alert('Tu portapapeles está vacío.');
       }
     } catch {
-      alert('Mantén presionado dentro del cuadro de texto y toca "Pegar".');
+      alert('Mantén presionado dentro del cuadro de texto y selecciona "Pegar".');
     }
   };
 
@@ -592,7 +579,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           const outcome = validateAndSaveExtractedResult(localRes, rawToRecord, 'notificacion', Date.now());
           if (outcome.savedCount > 0) {
             setSavedBanner(
-              `✅ ¡Compra única registrada!: ${localRes.movimientosDetectados
+              `Compra registrada: ${localRes.movimientosDetectados
                 .map((m) => `${m.desc} (${formatCurrency(m.monto, currency)})`)
                 .join(', ')}`
             );
@@ -618,7 +605,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       if (data.movimientosDetectados?.length > 0 || data.datosExtractoCredito) {
         const outcome = validateAndSaveExtractedResult(data, rawToRecord, activeMode, Date.now());
         if (outcome.savedCount > 0) {
-          setSavedBanner(`✅ ¡Se analizaron y guardaron ${outcome.savedCount} movimiento(s) único(s)!`);
+          setSavedBanner(`Se guardaron ${outcome.savedCount} movimiento(s) único(s).`);
         }
       }
     } catch {
@@ -631,7 +618,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       if (localRes.movimientosDetectados.length > 0 || localRes.datosExtractoCredito) {
         const outcome = validateAndSaveExtractedResult(localRes, rawToRecord, activeMode, Date.now());
         if (outcome.savedCount > 0) {
-          setSavedBanner(`✅ ¡Registrado sin duplicados!: ${outcome.savedCount} movimiento(s).`);
+          setSavedBanner(`Registrado sin duplicados: ${outcome.savedCount} movimiento(s).`);
         }
       }
     } finally {
@@ -654,7 +641,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         fingerprint: buildPurchaseFingerprint(item.monto, item.tipo, item.desc, item.entidad),
       }))
     );
-    setSavedBanner(`✅ Se guardaron manualmente ${analysisResult.movimientosDetectados.length} movimiento(s).`);
+    setSavedBanner(`Se guardaron manualmente ${analysisResult.movimientosDetectados.length} movimiento(s).`);
   };
 
   const handleImportSingleMovement = (item: ExtractedTransactionItem) => {
@@ -671,7 +658,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         fingerprint: buildPurchaseFingerprint(item.monto, item.tipo, item.desc, item.entidad),
       },
     ]);
-    setSavedBanner(`✅ Movimiento "${item.desc}" (${formatCurrency(item.monto, currency)}) registrado.`);
+    setSavedBanner(`Movimiento "${item.desc}" (${formatCurrency(item.monto, currency)}) registrado.`);
   };
 
   const handleSaveExtractedCredit = () => {
@@ -691,7 +678,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       enMora: false,
       notas: `Importado de extracto. Cuota de manejo: $${(ext.cuotaManejo || 0).toLocaleString('es-CO')}.`,
     });
-    setSavedBanner(`✅ Obligación crediticia de ${ext.entidad || 'tu extracto'} guardada en Deudas.`);
+    setSavedBanner(`Obligación crediticia de ${ext.entidad || 'tu extracto'} guardada en Deudas.`);
   };
 
   const formatRelativeDays = (timestamp: number) => {
@@ -712,28 +699,26 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         hour: '2-digit',
         minute: '2-digit',
       })
-    : 'Sin límite de antigüedad';
+    : 'Sin límite';
 
   return (
     <div className="space-y-4">
-      {/* TARJETA 1: ESCUDO ANTI-DUPLICADOS Y PLAZO DE FECHA DE CAPTURA */}
-      <div className="bg-slate-900/90 backdrop-blur-xl border border-indigo-500/30 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
+      {/* BARRA DE CONTROL DE PLAZO Y ANTI-DUPLICADOS */}
+      <div className="bg-[#111520] border border-white/[0.07] rounded-3xl p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 border border-indigo-500/40 flex items-center justify-center shadow-inner">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-sm sm:text-base font-extrabold text-white tracking-tight">
-                  Filtro Inteligente Anti-Duplicados y Plazo de Fechas
-                </h2>
-                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-950/90 border border-emerald-500/40 text-emerald-300">
-                  1 Compra = 1 Único Registro
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-white">Control de Lectura y Fecha Límite</h2>
+                <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300">
+                  1 Compra = 1 Registro
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Evita anotar la misma compra varias veces (Push + SMS + Correo) y bloquea notificaciones antiguas
+              <p className="text-xs text-slate-400">
+                Corte activo: <strong className="text-slate-200">{cutoffFormatted}</strong> • {blockedDuplicatesCount} duplicadas omitidas • {blockedOldCount} antiguas omitidas
               </p>
             </div>
           </div>
@@ -741,309 +726,193 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowHistoryModal(true)}
-              className="flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl bg-indigo-950/90 hover:bg-indigo-900 border border-indigo-500/50 text-indigo-200 transition shadow-sm"
+              onClick={handleScanAllSourcesNow}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl bg-white text-slate-950 hover:bg-slate-200 transition"
             >
-              <History className="w-4 h-4 text-indigo-400" />
-              <span>Historial 30 Días</span>
-              <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-indigo-600 text-white font-extrabold">
-                {recent30DaysHistory.length}
-              </span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Sincronizar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowHistoryModal(true)}
+              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-slate-200 transition"
+            >
+              <History className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Historial ({recent30DaysHistory.length})</span>
             </button>
 
             <button
               type="button"
               onClick={onCleanDuplicatesNow}
-              className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-slate-800 hover:bg-rose-950/80 border border-slate-700 hover:border-rose-500/50 text-slate-200 hover:text-rose-200 transition"
-              title="Eliminar cualquier compra repetida en tus movimientos actuales"
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-slate-300 transition"
+              title="Eliminar duplicados existentes"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-              <span>Depurar Duplicados</span>
+              <span>Depurar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowPermissionsModal((v) => !v)}
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-slate-300 transition"
+            >
+              <Settings className="w-3.5 h-3.5 text-slate-400" />
+              <span>Permisos</span>
             </button>
           </div>
         </div>
 
-        {/* Selector de Plazo / Fecha desde la cual registrar notificaciones */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 bg-slate-950/90 border border-slate-800/90 rounded-2xl p-3.5">
-          <div className="lg:col-span-7 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                <Calendar className="w-4 h-4 text-indigo-400" />
-                <span>¿Desde qué fecha quieres registrar notificaciones?</span>
-              </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-semibold cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={capturePolicy.ignorarNotificacionesAntiguas}
-                  onChange={(e) =>
+        {/* Selector limpio de Plazo y Ventana Anti-duplicados */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-2 border-t border-white/[0.06] items-center">
+          <div className="md:col-span-8 flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-slate-400 mr-1 flex items-center gap-1">
+              <Calendar className="w-3.5 h-3.5 text-indigo-400" /> Registrar desde:
+            </span>
+            {[
+              { id: 'desde_ahora', label: 'Desde Ahora' },
+              { id: 'solo_hoy', label: 'Solo Hoy' },
+              { id: 'fecha_personalizada', label: 'Elegir Fecha' },
+              { id: 'ultimos_dias', label: 'Últimos Días' },
+            ].map((opt) => {
+              const active = capturePolicy.modoPlazo === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    const now = Date.now();
                     onUpdateCapturePolicy({
                       ...capturePolicy,
-                      ignorarNotificacionesAntiguas: e.target.checked,
-                    })
-                  }
-                  className="accent-emerald-500"
-                />
-                Bloquear antiguas
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-              {[
-                { id: 'desde_ahora', label: '⚡ Desde Ahora' },
-                { id: 'solo_hoy', label: '☀️ Solo Hoy' },
-                { id: 'fecha_personalizada', label: '📅 Elegir Fecha' },
-                { id: 'ultimos_dias', label: '⏳ Últimos Días' },
-              ].map((opt) => {
-                const active = capturePolicy.modoPlazo === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => {
-                      const now = Date.now();
-                      onUpdateCapturePolicy({
-                        ...capturePolicy,
-                        ignorarNotificacionesAntiguas: true,
-                        modoPlazo: opt.id as CaptureTimeframeMode,
-                        timestampCorteMs: opt.id === 'desde_ahora' ? now : capturePolicy.timestampCorteMs,
-                      });
-                    }}
-                    className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition ${
-                      active
-                        ? 'bg-indigo-600 border-indigo-400 text-white shadow'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
+                      ignorarNotificacionesAntiguas: true,
+                      modoPlazo: opt.id as CaptureTimeframeMode,
+                      timestampCorteMs: opt.id === 'desde_ahora' ? now : capturePolicy.timestampCorteMs,
+                    });
+                  }}
+                  className={`py-1.5 px-3 rounded-xl text-xs font-medium transition ${
+                    active
+                      ? 'bg-indigo-500 text-white'
+                      : 'bg-[#0b0e17] text-slate-400 hover:text-white border border-white/[0.05]'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
 
             {capturePolicy.modoPlazo === 'fecha_personalizada' && (
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="text-xs text-slate-300">Registrar solo desde:</span>
-                <input
-                  type="datetime-local"
-                  value={capturePolicy.desdeFechaISO}
-                  onChange={(e) =>
-                    onUpdateCapturePolicy({
-                      ...capturePolicy,
-                      desdeFechaISO: e.target.value,
-                      timestampCorteMs: new Date(e.target.value).getTime() || Date.now(),
-                    })
-                  }
-                  className="bg-slate-900 border border-indigo-500/50 rounded-xl px-3 py-1.5 text-xs text-white font-semibold"
-                />
-              </div>
-            )}
-
-            {capturePolicy.modoPlazo === 'ultimos_dias' && (
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="text-xs text-slate-300">Aceptar notificaciones de los últimos:</span>
-                {[1, 3, 7, 15, 30].map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() =>
-                      onUpdateCapturePolicy({
-                        ...capturePolicy,
-                        ultimosDias: d,
-                      })
-                    }
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
-                      capturePolicy.ultimosDias === d
-                        ? 'bg-indigo-600 border-indigo-400 text-white'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {d} {d === 1 ? 'día' : 'días'}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="text-[11px] text-slate-400 flex items-center justify-between gap-2 pt-0.5">
-              <span>
-                📌 <strong>Corte activo:</strong> Solo se registran compras desde{' '}
-                <strong className="text-indigo-300">{cutoffFormatted}</strong> en adelante.
-              </span>
-              {capturePolicy.modoPlazo === 'desde_ahora' && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateCapturePolicy({
-                      ...capturePolicy,
-                      timestampCorteMs: Date.now(),
-                    })
-                  }
-                  className="text-[11px] text-indigo-400 hover:text-indigo-300 underline shrink-0"
-                >
-                  Actualizar a este minuto
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Configuración de Ventana Anti-Duplicados */}
-          <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                🛡️ Protección Misma Compra
-              </span>
-              <label className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-semibold cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={capturePolicy.evitarDuplicadosMismaCompra}
-                  onChange={(e) =>
-                    onUpdateCapturePolicy({
-                      ...capturePolicy,
-                      evitarDuplicadosMismaCompra: e.target.checked,
-                    })
-                  }
-                  className="accent-emerald-500"
-                />
-                Activa
-              </label>
-            </div>
-
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              Si una compra envía notificación de la App + SMS + Correo por el mismo monto, solo se anota la primera vez.
-            </p>
-
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-300">Ventana de bloqueo:</span>
-              <select
-                value={capturePolicy.ventanaAntiduplicadosMinutos}
+              <input
+                type="datetime-local"
+                value={capturePolicy.desdeFechaISO}
                 onChange={(e) =>
                   onUpdateCapturePolicy({
                     ...capturePolicy,
-                    ventanaAntiduplicadosMinutos: Number(e.target.value),
+                    desdeFechaISO: e.target.value,
+                    timestampCorteMs: new Date(e.target.value).getTime() || Date.now(),
                   })
                 }
-                aria-label="Ventana anti-duplicados"
-                className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white font-semibold"
+                className="bg-[#0b0e17] border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white"
+              />
+            )}
+
+            {capturePolicy.modoPlazo === 'ultimos_dias' && (
+              <select
+                value={capturePolicy.ultimosDias}
+                onChange={(e) =>
+                  onUpdateCapturePolicy({
+                    ...capturePolicy,
+                    ultimosDias: Number(e.target.value),
+                  })
+                }
+                aria-label="Últimos días"
+                className="bg-[#0b0e17] border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white"
               >
-                <option value={15}>15 minutos</option>
-                <option value={60}>1 hora (Recomendado)</option>
-                <option value={360}>6 horas</option>
-                <option value={1440}>Mismo día (24 horas)</option>
+                <option value={1}>Último día</option>
+                <option value={3}>Últimos 3 días</option>
+                <option value={7}>Últimos 7 días</option>
+                <option value={15}>Últimos 15 días</option>
+                <option value={30}>Últimos 30 días</option>
               </select>
-            </div>
+            )}
+          </div>
 
-            <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-800">
-              <span className="text-emerald-400 font-semibold">
-                🛡️ {blockedDuplicatesCount} duplicadas omitidas
-              </span>
-              <span className="text-amber-300 font-semibold">
-                ⏳ {blockedOldCount} antiguas omitidas
-              </span>
-            </div>
+          <div className="md:col-span-4 flex items-center justify-end gap-2">
+            <span className="text-xs text-slate-400">Bloqueo duplicados:</span>
+            <select
+              value={capturePolicy.ventanaAntiduplicadosMinutos}
+              onChange={(e) =>
+                onUpdateCapturePolicy({
+                  ...capturePolicy,
+                  ventanaAntiduplicadosMinutos: Number(e.target.value),
+                })
+              }
+              aria-label="Ventana anti-duplicados"
+              className="bg-[#0b0e17] border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white"
+            >
+              <option value={15}>15 min</option>
+              <option value={60}>1 hora</option>
+              <option value={360}>6 horas</option>
+              <option value={1440}>24 horas</option>
+            </select>
           </div>
         </div>
 
-        {/* Barra Compacta de Acciones Rápidas y Permisos del Teléfono */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleScanAllSourcesNow}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow transition"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Sincronizar Compras Nuevas</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handlePasteFromClipboard}
-              className="bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
-            >
-              <ClipboardPaste className="w-3.5 h-3.5" />
-              <span>Pegar del Portapapeles</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowPermissionsPanel((v) => !v)}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5 transition"
-            >
-              <Settings className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Configurar Permisos Samsung A36</span>
-              {showPermissionsPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
-          </div>
-
-          <label className="flex items-center gap-2 text-xs font-semibold bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer text-slate-200">
-            <input
-              type="checkbox"
-              checked={autoSaveOnDetect}
-              onChange={(e) => setAutoSaveOnDetect(e.target.checked)}
-              className="accent-emerald-500"
-            />
-            Auto-Guardar
-          </label>
-        </div>
-
-        {/* Panel Desplegable de Permisos del Dispositivo */}
-        {showPermissionsPanel && (
-          <div className="bg-slate-950 border border-indigo-500/30 rounded-2xl p-3.5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-bold text-indigo-200">
-                Permisos de Lectura Automática en Samsung Galaxy A36 5G:
+        {/* Panel desplegable de permisos */}
+        {showPermissionsModal && (
+          <div className="bg-[#0b0e17] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-white">
+                Permisos del dispositivo ({nativePermissionGranted || webNotifPerm === 'granted' || clipboardPermGranted ? 'Activos' : 'Pendientes'})
               </span>
-              <span className="text-[11px] text-slate-400">
-                Estado: {nativePermissionGranted ? '🟢 Escucha Android 24/7 Activa' : webNotifPerm === 'granted' || clipboardPermGranted ? '🟢 Permisos Web Activos' : '🟡 Pendiente'}
-              </span>
+              <button
+                type="button"
+                onClick={() => setShowPermissionsModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
                 onClick={handleRequestAllPermissions}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+                className="bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-semibold py-2.5 px-3 rounded-xl transition"
               >
-                <Bell className="w-4 h-4 shrink-0" />
-                <span>1. Pedir Permisos Ahora</span>
+                1. Autorizar Permisos
               </button>
-
               <button
                 type="button"
                 onClick={handleOpenAppDetailsSettings}
-                className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+                className="bg-white/[0.07] hover:bg-white/[0.12] text-white text-xs font-medium py-2.5 px-3 rounded-xl transition"
               >
-                <Settings className="w-4 h-4 shrink-0" />
-                <span>2. Permitir Ajustes Restringidos</span>
+                2. Ajustes Restringidos
               </button>
-
               <button
                 type="button"
                 onClick={handleOpenNotificationAccessSettings}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold py-2.5 px-3 rounded-xl transition"
               >
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                <span>3. Abrir Acceso a Notificaciones</span>
+                3. Acceso a Notificaciones
               </button>
             </div>
           </div>
         )}
 
-        {/* Bandeja de Notificaciones Pendientes de Revisión */}
         {autoCapturedNotifs.length > 0 && (
-          <div className="space-y-2 pt-2 border-t border-slate-800">
-            <span className="text-xs font-bold text-emerald-400 block">
-              📥 Notificaciones Recibidas ({autoCapturedNotifs.length}):
+          <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+            <span className="text-xs font-medium text-emerald-400 block">
+              Notificaciones pendientes ({autoCapturedNotifs.length})
             </span>
             {autoCapturedNotifs.map((n) => (
               <div
                 key={n.id}
-                className="bg-slate-950 border border-emerald-500/40 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2 text-xs"
+                className="bg-[#0b0e17] border border-white/[0.08] rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs"
               >
                 <div className="flex-1 min-w-[200px]">
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-indigo-950 text-indigo-300">
+                  <span className="text-[10px] font-semibold uppercase text-indigo-400">
                     {n.app} • {n.time}
                   </span>
-                  <p className="text-slate-100 font-medium mt-1">{n.text}</p>
+                  <p className="text-slate-200 mt-0.5">{n.text}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -1056,13 +925,13 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                       setAnalysisResult(r);
                       const outcome = validateAndSaveExtractedResult(r, n.text, 'notificacion', Date.now());
                       if (outcome.savedCount > 0) {
-                        setSavedBanner(`✅ Notificación de ${n.app} guardada como compra única.`);
+                        setSavedBanner(`Notificación de ${n.app} guardada.`);
                       }
                       onDismissCapturedNotif(n.id);
                     }}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg"
+                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold px-3 py-1.5 rounded-xl"
                   >
-                    Registrar Compra
+                    Registrar
                   </button>
                   <button
                     type="button"
@@ -1079,20 +948,16 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
       </div>
 
       {warningBanner && (
-        <div className="bg-amber-950/90 border border-amber-500/60 text-amber-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-2xl text-xs font-medium flex items-center justify-between gap-2">
           <span>{warningBanner}</span>
-          <button
-            type="button"
-            onClick={() => setWarningBanner(null)}
-            className="text-amber-300 hover:text-white"
-          >
+          <button type="button" onClick={() => setWarningBanner(null)} className="text-amber-300 hover:text-white">
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
       {savedBanner && (
-        <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 px-4 py-3 rounded-2xl text-xs font-medium flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>{savedBanner}</span>
@@ -1100,48 +965,69 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           <button
             type="button"
             onClick={() => setShowHistoryModal(true)}
-            className="text-[11px] underline text-emerald-300 hover:text-white shrink-0"
+            className="text-xs underline text-emerald-300 hover:text-white shrink-0"
           >
-            Ver Historial 30 días →
+            Ver historial →
           </button>
         </div>
       )}
 
-      {/* Escáner Multimodal: Notificación Escrita, Foto/Recibo, Extracto PDF, Correo */}
-      <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {[
-            { id: 'notificacion', label: 'Notificación / SMS', icon: Bell },
-            { id: 'imagen', label: 'Foto de Recibo', icon: ImageIcon },
-            { id: 'pdf', label: 'Extracto PDF', icon: FileText },
-            { id: 'correo', label: 'Correo Bancario', icon: Mail },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeMode === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => {
-                  setActiveMode(tab.id as SourceType);
-                  setSavedBanner(null);
-                  setWarningBanner(null);
-                }}
-                className={`flex items-center gap-2 p-3 rounded-2xl border text-left transition ${
-                  isActive
-                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 border-indigo-400 text-white font-bold shadow-md'
-                    : 'bg-slate-950/90 border-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span className="text-xs">{tab.label}</span>
-              </button>
-            );
-          })}
+      {/* ESCÁNER MULTIMODAL LIMPIO */}
+      <div className="bg-[#111520] border border-white/[0.07] rounded-3xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex p-1 rounded-2xl bg-[#0b0e17] border border-white/[0.05] overflow-x-auto max-w-full">
+            {[
+              { id: 'notificacion', label: 'Notificación / SMS', icon: Bell },
+              { id: 'imagen', label: 'Recibo / Foto', icon: ImageIcon },
+              { id: 'pdf', label: 'Extracto PDF', icon: FileText },
+              { id: 'correo', label: 'Correo', icon: Mail },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeMode === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveMode(tab.id as SourceType);
+                    setSavedBanner(null);
+                    setWarningBanner(null);
+                  }}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+                    isActive ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePasteFromClipboard}
+              className="bg-white/[0.06] hover:bg-white/[0.1] text-slate-200 text-xs font-medium px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition"
+            >
+              <ClipboardPaste className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Pegar</span>
+            </button>
+
+            <label className="flex items-center gap-2 text-xs text-slate-300 bg-[#0b0e17] border border-white/[0.06] px-3 py-2 rounded-xl cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoSaveOnDetect}
+                onChange={(e) => setAutoSaveOnDetect(e.target.checked)}
+                className="accent-emerald-500"
+              />
+              Auto-Guardar
+            </label>
+          </div>
         </div>
 
         {(activeMode === 'imagen' || activeMode === 'pdf') && (
-          <div className="p-3.5 rounded-2xl bg-slate-950 border border-dashed border-slate-700">
+          <div className="p-4 rounded-2xl bg-[#0b0e17] border border-dashed border-white/15">
             <input
               ref={fileInputRef}
               type="file"
@@ -1159,15 +1045,15 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
             />
 
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-xs text-slate-300">
+              <div className="text-xs text-slate-400">
                 {selectedFile ? (
-                  <span className="text-emerald-400 font-semibold">
-                    📎 Archivo cargado: {selectedFile.name} ({Math.round(selectedFile.size / 1024)} KB)
+                  <span className="text-emerald-400 font-medium">
+                    Archivo cargado: {selectedFile.name} ({Math.round(selectedFile.size / 1024)} KB)
                   </span>
                 ) : activeMode === 'imagen' ? (
-                  'Toma una foto a tu recibo/factura o elige una imagen de tu galería:'
+                  'Toma una foto a tu recibo o selecciona una imagen de tu galería'
                 ) : (
-                  'Selecciona el archivo PDF de tu extracto bancario desde tu celular:'
+                  'Selecciona el archivo PDF de tu extracto bancario'
                 )}
               </div>
 
@@ -1176,18 +1062,18 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                   <button
                     type="button"
                     onClick={() => cameraInputRef.current?.click()}
-                    className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-2 rounded-xl transition"
+                    className="flex items-center gap-1.5 bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-semibold px-3.5 py-2 rounded-xl transition"
                   >
-                    <Camera className="w-4 h-4" />
-                    Tomar Foto
+                    <Camera className="w-3.5 h-3.5" />
+                    Cámara
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-bold px-3 py-2 rounded-xl border border-slate-700 transition"
+                  className="flex items-center gap-1.5 bg-white/[0.07] hover:bg-white/[0.12] text-white text-xs font-medium px-3.5 py-2 rounded-xl transition"
                 >
-                  <Upload className="w-4 h-4" />
+                  <Upload className="w-3.5 h-3.5" />
                   {activeMode === 'imagen' ? 'Galería' : 'Subir PDF'}
                 </button>
                 {selectedFile && (
@@ -1198,7 +1084,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                       setPreviewUrl(null);
                       setBase64Data(null);
                     }}
-                    className="p-2 text-rose-400 hover:bg-rose-950/50 rounded-lg"
+                    className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -1210,8 +1096,8 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               <div className="mt-3 flex justify-center">
                 <img
                   src={previewUrl}
-                  alt="Comprobante seleccionado"
-                  className="max-h-48 rounded-xl border border-slate-700 object-contain"
+                  alt="Comprobante"
+                  className="max-h-48 rounded-2xl border border-white/10 object-contain"
                 />
               </div>
             )}
@@ -1225,25 +1111,20 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
             rows={3}
             placeholder={
               activeMode === 'notificacion'
-                ? 'Pega o escribe una notificación para analizarla (Ej: "Bancolombia: Compraste $45.000 en D1")...'
+                ? 'Pega aquí una notificación bancaria o SMS para analizarla (ej: "Bancolombia: Compraste $45.000 en D1")...'
                 : activeMode === 'pdf'
-                ? 'Sube tu extracto PDF arriba o pega aquí el texto del extracto...'
+                ? 'Sube tu extracto PDF arriba o pega el texto aquí...'
                 : activeMode === 'correo'
-                ? 'Pega aquí el texto del correo de tu banco o factura...'
-                : 'Opcional: Escribe un detalle o monto si la imagen está borrosa...'
+                ? 'Pega el texto del correo bancario...'
+                : 'Detalle opcional del recibo...'
             }
-            className="w-full bg-slate-950 text-slate-100 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-2xl p-3.5 text-sm"
+            className="w-full bg-[#0b0e17] text-slate-100 border border-white/[0.07] focus:border-indigo-500 focus:outline-none rounded-2xl p-4 text-sm"
           />
 
           <div className="flex flex-wrap items-center justify-between mt-3 gap-2">
-            <button
-              type="button"
-              onClick={() => setShowHistoryModal(true)}
-              className="text-xs text-slate-400 hover:text-indigo-300 flex items-center gap-1.5 font-medium"
-            >
-              <Clock className="w-3.5 h-3.5 text-indigo-400" />
-              Historial de los últimos 30 días ({recent30DaysHistory.length})
-            </button>
+            <span className="text-xs text-slate-500">
+              Ignora automáticamente saldos disponibles y compras repetidas
+            </span>
 
             <div className="flex items-center gap-2">
               {inputText && (
@@ -1253,7 +1134,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     setInputText('');
                     setAnalysisResult(null);
                   }}
-                  className="text-xs text-slate-400 hover:text-white px-2.5 py-2"
+                  className="text-xs text-slate-400 hover:text-white px-3 py-2"
                 >
                   Limpiar
                 </button>
@@ -1262,26 +1143,22 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                 type="button"
                 disabled={isAnalyzing || (!inputText.trim() && !selectedFile)}
                 onClick={handleRunAnalysis}
-                className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-500 hover:to-emerald-500 disabled:opacity-50 text-white font-bold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-lg transition"
+                className="flex items-center gap-2 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white font-semibold text-xs px-5 py-2.5 rounded-xl transition"
               >
                 <Sparkles className="w-4 h-4" />
-                {isAnalyzing
-                  ? 'Analizando...'
-                  : autoSaveOnDetect
-                  ? 'Analizar y Registrar (Sin Duplicar)'
-                  : 'Analizar Contenido'}
+                {isAnalyzing ? 'Analizando...' : 'Analizar y Registrar'}
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Resultados extraídos */}
+      {/* RESULTADOS EXTRAÍDOS */}
       {analysisResult && (
-        <div className="bg-slate-900 border border-indigo-500/40 rounded-3xl p-4 sm:p-5 space-y-4 shadow-xl">
-          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-800 pb-3">
+        <div className="bg-[#111520] border border-white/[0.08] rounded-3xl p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-white/[0.06] pb-3">
             <div>
-              <span className="text-[11px] font-bold uppercase px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">
+              <span className="text-[11px] font-semibold uppercase px-2.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300">
                 {analysisResult.tipoDocumentoDetectado}
               </span>
               <p className="text-sm text-slate-200 mt-1.5">{analysisResult.resumenEjecutivo}</p>
@@ -1291,7 +1168,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               <button
                 type="button"
                 onClick={handleImportAllMovements}
-                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition shrink-0"
+                className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold px-4 py-2 rounded-xl transition shrink-0"
               >
                 <PlusCircle className="w-4 h-4" />
                 Forzar Guardado ({analysisResult.movimientosDetectados.length})
@@ -1300,42 +1177,42 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           </div>
 
           {analysisResult.datosExtractoCredito && (
-            <div className="bg-indigo-950/30 border border-indigo-500/40 rounded-2xl p-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <h3 className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+            <div className="bg-[#0b0e17] border border-white/[0.07] rounded-2xl p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
                   <CreditCard className="w-4 h-4" />
-                  Resumen de Extracto ({analysisResult.datosExtractoCredito.entidad})
+                  Extracto detectado ({analysisResult.datosExtractoCredito.entidad})
                 </h3>
                 <button
                   type="button"
                   onClick={handleSaveExtractedCredit}
-                  className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1.5 rounded-lg"
+                  className="text-xs bg-indigo-500 hover:bg-indigo-400 text-white font-semibold px-3 py-1.5 rounded-xl"
                 >
-                  + Guardar en Mis Deudas
+                  Guardar en Deudas
                 </button>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                <div className="bg-slate-950 p-2.5 rounded-xl">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                <div className="bg-[#111520] p-3 rounded-xl">
                   <span className="text-slate-400 block">Cupo Total</span>
-                  <strong className="text-white">
+                  <strong className="text-white tabular-nums">
                     {formatCurrency(analysisResult.datosExtractoCredito.cupoTotal || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-xl">
-                  <span className="text-slate-400 block">Saldo / Deuda</span>
-                  <strong className="text-amber-400">
+                <div className="bg-[#111520] p-3 rounded-xl">
+                  <span className="text-slate-400 block">Deuda</span>
+                  <strong className="text-amber-400 tabular-nums">
                     {formatCurrency(analysisResult.datosExtractoCredito.saldoActual || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-xl">
+                <div className="bg-[#111520] p-3 rounded-xl">
                   <span className="text-slate-400 block">Pago Mínimo</span>
-                  <strong className="text-emerald-400">
+                  <strong className="text-emerald-400 tabular-nums">
                     {formatCurrency(analysisResult.datosExtractoCredito.pagoMinimo || 0, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-xl">
+                <div className="bg-[#111520] p-3 rounded-xl">
                   <span className="text-slate-400 block">Tasa E.A.</span>
-                  <strong className="text-rose-400">{analysisResult.datosExtractoCredito.tasaEA}% E.A.</strong>
+                  <strong className="text-rose-400 tabular-nums">{analysisResult.datosExtractoCredito.tasaEA}% E.A.</strong>
                 </div>
               </div>
             </div>
@@ -1346,24 +1223,22 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
               {analysisResult.movimientosDetectados.map((mov, idx) => (
                 <div
                   key={idx}
-                  className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-2xl p-3.5"
+                  className="flex flex-wrap items-center justify-between gap-2 bg-[#0b0e17] border border-white/[0.06] rounded-2xl p-3.5"
                 >
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-bold text-white">{mov.desc}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
-                        {mov.entidad}
-                      </span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300">
-                        {mov.categoria}
-                      </span>
-                    </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold text-white">{mov.desc}</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-lg bg-white/[0.05] text-slate-300">
+                      {mov.entidad}
+                    </span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-lg bg-indigo-500/10 text-indigo-300">
+                      {mov.categoria}
+                    </span>
                   </div>
 
                   <div className="flex items-center gap-2">
                     <span
-                      className={`text-sm font-extrabold ${
-                        mov.tipo === 'ganancia' ? 'text-emerald-400' : 'text-rose-400'
+                      className={`text-sm font-bold tabular-nums ${
+                        mov.tipo === 'ganancia' ? 'text-emerald-400' : 'text-white'
                       }`}
                     >
                       {mov.tipo === 'ganancia' ? '+' : '-'}
@@ -1373,9 +1248,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                       <button
                         type="button"
                         onClick={() => handleImportSingleMovement(mov)}
-                        className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg transition"
+                        className="text-xs bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold px-3 py-1.5 rounded-xl transition"
                       >
-                        + Guardar
+                        Guardar
                       </button>
                     )}
                   </div>
@@ -1385,7 +1260,7 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
           )}
 
           {analysisResult.ejemploPracticoAhorro && (
-            <div className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-3 text-xs text-amber-100 flex items-start gap-2">
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3.5 text-xs text-amber-200 flex items-start gap-2">
               <Lightbulb className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <span>{analysisResult.ejemploPracticoAhorro}</span>
             </div>
@@ -1393,63 +1268,54 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
         </div>
       )}
 
-      {/* MODAL DE HISTORIAL DE NOTIFICACIONES PROCESADAS (ÚLTIMOS 30 DÍAS) */}
+      {/* MODAL DE HISTORIAL DE 30 DÍAS */}
       {showHistoryModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-history-title"
         >
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-3xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="px-4 py-3.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center">
+          <div className="bg-[#111520] border border-white/10 rounded-3xl max-w-3xl w-full max-h-[86vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
                   <History className="w-5 h-5 text-indigo-400" />
                 </div>
                 <div>
-                  <h3 id="modal-history-title" className="text-sm sm:text-base font-bold text-white">
-                    Historial de Notificaciones Procesadas (Últimos 30 Días)
+                  <h3 id="modal-history-title" className="text-sm sm:text-base font-semibold text-white">
+                    Historial de Notificaciones (30 Días)
                   </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Registros únicos verificados sin duplicados
-                  </p>
+                  <p className="text-xs text-slate-400">Registros únicos verificados sin duplicados</p>
                 </div>
               </div>
 
               <button
                 type="button"
                 onClick={() => setShowHistoryModal(false)}
-                className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-                title="Cerrar ventana"
+                className="p-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-slate-400 hover:text-white transition"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 bg-slate-900/90 border-b border-slate-800 space-y-3">
+            <div className="p-4 border-b border-white/[0.07] space-y-3 bg-[#0b0e17]">
               <div className="grid grid-cols-3 gap-2.5">
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Compras / Eventos Únicos
-                  </span>
-                  <strong className="text-sm sm:text-base font-extrabold text-white">
-                    {historySummary.count} registros
+                <div className="bg-[#111520] border border-white/[0.05] rounded-2xl p-3">
+                  <span className="text-[11px] text-slate-400 block">Registros</span>
+                  <strong className="text-sm sm:text-base font-bold text-white tabular-nums">
+                    {historySummary.count}
                   </strong>
                 </div>
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Compras Detectadas
-                  </span>
-                  <strong className="text-sm sm:text-base font-extrabold text-rose-400">
+                <div className="bg-[#111520] border border-white/[0.05] rounded-2xl p-3">
+                  <span className="text-[11px] text-slate-400 block">Compras</span>
+                  <strong className="text-sm sm:text-base font-bold text-rose-400 tabular-nums">
                     {formatCurrency(historySummary.gastos, currency)}
                   </strong>
                 </div>
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Abonos Detectados
-                  </span>
-                  <strong className="text-sm sm:text-base font-extrabold text-emerald-400">
+                <div className="bg-[#111520] border border-white/[0.05] rounded-2xl p-3">
+                  <span className="text-[11px] text-slate-400 block">Ingresos</span>
+                  <strong className="text-sm sm:text-base font-bold text-emerald-400 tabular-nums">
                     {formatCurrency(historySummary.ingresos, currency)}
                   </strong>
                 </div>
@@ -1457,13 +1323,13 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <div className="sm:col-span-6 relative">
-                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={historySearch}
                     onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Buscar por comercio, monto, banco o texto..."
-                    className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-xl pl-8 pr-3 py-2 text-xs text-white"
+                    placeholder="Buscar comercio, monto o banco..."
+                    className="w-full bg-[#111520] border border-white/10 focus:border-indigo-500 focus:outline-none rounded-xl pl-9 pr-3 py-2 text-xs text-white"
                   />
                 </div>
 
@@ -1472,9 +1338,9 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     value={historyBankFilter}
                     onChange={(e) => setHistoryBankFilter(e.target.value)}
                     aria-label="Filtrar por banco"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-200"
+                    className="w-full bg-[#111520] border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200"
                   >
-                    <option value="todos">🏦 Todos los bancos</option>
+                    <option value="todos">Todos los bancos</option>
                     {availableBanksInHistory.map((bank) => (
                       <option key={bank} value={bank}>
                         {bank}
@@ -1488,33 +1354,33 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                     value={historyDaysFilter}
                     onChange={(e) => setHistoryDaysFilter(Number(e.target.value))}
                     aria-label="Filtrar por periodo"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-200"
+                    className="w-full bg-[#111520] border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200"
                   >
-                    <option value={30}>📅 Últimos 30 días</option>
-                    <option value={15}>📅 Últimos 15 días</option>
-                    <option value={7}>📅 Últimos 7 días</option>
-                    <option value={1}>📅 Últimas 24 horas</option>
+                    <option value={30}>Últimos 30 días</option>
+                    <option value={15}>Últimos 15 días</option>
+                    <option value={7}>Últimos 7 días</option>
+                    <option value={1}>Últimas 24 horas</option>
                   </select>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Filter className="w-3.5 h-3.5 text-slate-400 mr-1" />
                   {[
                     { id: 'todos', label: 'Todos' },
-                    { id: 'gasto', label: 'Compras / Pagos' },
-                    { id: 'ganancia', label: 'Ingresos / Abonos' },
+                    { id: 'gasto', label: 'Compras' },
+                    { id: 'ganancia', label: 'Ingresos' },
                     { id: 'deuda', label: 'Deudas' },
                   ].map((pill) => (
                     <button
                       key={pill.id}
                       type="button"
                       onClick={() => setHistoryTypeFilter(pill.id)}
-                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition ${
+                      className={`text-xs font-medium px-3 py-1 rounded-lg transition ${
                         historyTypeFilter === pill.id
-                          ? 'bg-indigo-600 border-indigo-500 text-white'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                          ? 'bg-indigo-500 text-white'
+                          : 'bg-[#111520] text-slate-400 hover:text-white'
                       }`}
                     >
                       {pill.label}
@@ -1530,10 +1396,10 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                         onClearProcessedHistory();
                       }
                     }}
-                    className="text-[11px] text-rose-400 hover:text-rose-300 flex items-center gap-1"
+                    className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1"
                   >
-                    <Trash2 className="w-3 h-3" />
-                    Vaciar historial
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Vaciar
                   </button>
                 )}
               </div>
@@ -1541,41 +1407,36 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
 
             <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
               {filteredHistoryRecords.length === 0 ? (
-                <div className="text-center py-12 px-4 space-y-2">
-                  <div className="w-12 h-12 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center mx-auto text-slate-400">
-                    <History className="w-6 h-6" />
-                  </div>
-                  <p className="text-sm font-bold text-slate-300">
-                    No se encontraron notificaciones procesadas con este filtro
-                  </p>
+                <div className="text-center py-12 px-4">
+                  <p className="text-xs text-slate-400">No hay notificaciones procesadas con este filtro.</p>
                 </div>
               ) : (
                 filteredHistoryRecords.map((record) => (
                   <div
                     key={record.id}
-                    className="bg-slate-950 border border-slate-800/90 hover:border-indigo-500/40 rounded-xl p-3.5 transition space-y-2"
+                    className="bg-[#0b0e17] border border-white/[0.06] rounded-2xl p-4 space-y-2"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="space-y-1">
+                      <div>
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-500/30">
+                          <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300">
                             {record.entidad}
                           </span>
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-800">
+                          <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.05] text-slate-300">
                             {record.categoriaPrincipal}
                           </span>
-                          <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-slate-500" />
+                          <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
                             {record.fechaStr} ({formatRelativeDays(record.timestamp)})
                           </span>
                         </div>
-                        <p className="text-xs sm:text-sm font-bold text-white">{record.resumen}</p>
+                        <p className="text-sm font-semibold text-white mt-1">{record.resumen}</p>
                       </div>
 
                       <div className="flex items-center gap-2">
                         <span
-                          className={`text-sm font-extrabold ${
-                            record.tipoPrincipal === 'ganancia' ? 'text-emerald-400' : 'text-rose-400'
+                          className={`text-sm font-bold tabular-nums ${
+                            record.tipoPrincipal === 'ganancia' ? 'text-emerald-400' : 'text-white'
                           }`}
                         >
                           {record.tipoPrincipal === 'ganancia' ? '+' : '-'}
@@ -1585,31 +1446,19 @@ export const ScannerCenter: React.FC<ScannerCenterProps> = ({
                         <button
                           type="button"
                           onClick={() => onDeleteProcessedRecord(record.id)}
-                          className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 border border-slate-800 transition"
-                          title="Eliminar del historial"
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
 
-                    <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg px-3 py-2 text-[11px] text-slate-300 font-mono break-words">
+                    <div className="bg-[#111520] rounded-xl px-3 py-2 text-[11px] text-slate-400 font-mono break-words">
                       {record.textoOriginal}
                     </div>
                   </div>
                 ))
               )}
-            </div>
-
-            <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-              <span> Conservación automática de 30 días sin duplicados</span>
-              <button
-                type="button"
-                onClick={() => setShowHistoryModal(false)}
-                className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-4 py-1.5 rounded-xl transition"
-              >
-                Cerrar
-              </button>
             </div>
           </div>
         </div>

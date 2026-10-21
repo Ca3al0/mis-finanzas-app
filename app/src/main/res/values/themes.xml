@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.MisFinanzas" parent="android:Theme.Material.NoActionBar" />
+
+    <style name="Theme.MisFinanzas.WidgetDialog" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.48</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
+</resources>

@@ -1,4 +1,4 @@
-name: Build APK con Permisos y Lector Automatico de Notificaciones y SMS (Samsung A36 5G)
+name: Build APK con Permisos, Lector Automatico 24/7 y Widget de Agente (Samsung A36 5G)
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Compilar aplicación y generar APK con Solicitud Automática de Permisos y Lector en Segundo Plano
+      - name: Compilar aplicación y generar APK con Permisos, Lector 24/7 y Widget Interactivo de Agente
         run: |
           if [ -f package.json ]; then
             npm install --legacy-peer-deps
@@ -42,9 +42,715 @@ jobs:
           npx cap copy android
 
           JAVA_DIR="android/app/src/main/java/com/misfinanzas/personal/a36"
+          RES_DIR="android/app/src/main/res"
           mkdir -p "$JAVA_DIR"
+          mkdir -p "$RES_DIR/layout" "$RES_DIR/xml" "$RES_DIR/drawable" "$RES_DIR/values"
 
-          # 1. Servicio Nativo Android de Lectura 100% Automática de Notificaciones (con Filtro de Fecha y Anti-Duplicados)
+          # 0. Recursos XML para el Widget Nativo de Pantalla de Inicio
+          cat << 'EOF' > "$RES_DIR/drawable/widget_bg_editorial.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#F6F4EE" />
+              <corners android:radius="22dp" />
+              <stroke android:width="1.5dp" android:color="#DDD7C8" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/drawable/widget_card_inner.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#FFFFFF" />
+              <corners android:radius="14dp" />
+              <stroke android:width="1dp" android:color="#E2DDD1" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/drawable/widget_agent_reply_bg.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#EAF5F1" />
+              <corners android:radius="14dp" />
+              <stroke android:width="1dp" android:color="#0D7A5F" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/drawable/widget_btn_emerald.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#0D7A5F" />
+              <corners android:radius="12dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/drawable/widget_btn_terracotta.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#C25E00" />
+              <corners android:radius="12dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/xml/mis_finanzas_widget_info.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="280dp"
+              android:minHeight="180dp"
+              android:targetCellWidth="4"
+              android:targetCellHeight="3"
+              android:minResizeWidth="250dp"
+              android:minResizeHeight="140dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_mis_finanzas"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen" />
+          EOF
+
+          cat << 'EOF' > "$RES_DIR/layout/widget_mis_finanzas.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/widget_root_container"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:padding="12dp"
+              android:background="@drawable/widget_bg_editorial">
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="horizontal"
+                  android:gravity="center_vertical">
+
+                  <LinearLayout
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1"
+                      android:orientation="vertical">
+
+                      <TextView
+                          android:id="@+id/widget_title"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="Mis Finanzas • Tiempo Real"
+                          android:textColor="#181815"
+                          android:textStyle="bold"
+                          android:textSize="13sp" />
+
+                      <TextView
+                          android:id="@+id/widget_status_badge"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="Escáner 24/7 Activo • Anti-Duplicados"
+                          android:textColor="#0D7A5F"
+                          android:textStyle="bold"
+                          android:textSize="10sp" />
+                  </LinearLayout>
+
+                  <TextView
+                      android:id="@+id/widget_btn_refresh"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:background="@drawable/widget_card_inner"
+                      android:paddingLeft="9dp"
+                      android:paddingRight="9dp"
+                      android:paddingTop="5dp"
+                      android:paddingBottom="5dp"
+                      android:text="↻ Escanear"
+                      android:textColor="#181815"
+                      android:textStyle="bold"
+                      android:textSize="10sp" />
+              </LinearLayout>
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="8dp"
+                  android:orientation="horizontal">
+
+                  <LinearLayout
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1"
+                      android:background="@drawable/widget_card_inner"
+                      android:padding="7dp"
+                      android:layout_marginRight="4dp"
+                      android:orientation="vertical">
+
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="DISPONIBLE REAL"
+                          android:textColor="#5E5B52"
+                          android:textStyle="bold"
+                          android:textSize="9sp" />
+
+                      <TextView
+                          android:id="@+id/widget_disponible_val"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="$0"
+                          android:textColor="#0D7A5F"
+                          android:textStyle="bold"
+                          android:textSize="12sp"
+                          android:singleLine="true" />
+                  </LinearLayout>
+
+                  <LinearLayout
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1"
+                      android:background="@drawable/widget_card_inner"
+                      android:padding="7dp"
+                      android:layout_marginLeft="2dp"
+                      android:layout_marginRight="2dp"
+                      android:orientation="vertical">
+
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="COMPRAS MES"
+                          android:textColor="#5E5B52"
+                          android:textStyle="bold"
+                          android:textSize="9sp" />
+
+                      <TextView
+                          android:id="@+id/widget_gastos_val"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="$0"
+                          android:textColor="#C25E00"
+                          android:textStyle="bold"
+                          android:textSize="12sp"
+                          android:singleLine="true" />
+                  </LinearLayout>
+
+                  <LinearLayout
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1"
+                      android:background="@drawable/widget_card_inner"
+                      android:padding="7dp"
+                      android:layout_marginLeft="4dp"
+                      android:orientation="vertical">
+
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="FIJOS PEND."
+                          android:textColor="#5E5B52"
+                          android:textStyle="bold"
+                          android:textSize="9sp" />
+
+                      <TextView
+                          android:id="@+id/widget_fijos_val"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="$0"
+                          android:textColor="#181815"
+                          android:textStyle="bold"
+                          android:textSize="12sp"
+                          android:singleLine="true" />
+                  </LinearLayout>
+              </LinearLayout>
+
+              <LinearLayout
+                  android:id="@+id/widget_last_purchase_box"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="7dp"
+                  android:background="@drawable/widget_card_inner"
+                  android:padding="8dp"
+                  android:orientation="vertical">
+
+                  <TextView
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="ÚLTIMA COMPRA REGISTRADA EN TIEMPO REAL"
+                      android:textColor="#5E5B52"
+                      android:textStyle="bold"
+                      android:textSize="9sp" />
+
+                  <TextView
+                      android:id="@+id/widget_last_purchase_title"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="2dp"
+                      android:text="Sin compras registradas hoy"
+                      android:textColor="#181815"
+                      android:textStyle="bold"
+                      android:textSize="11sp"
+                      android:singleLine="true" />
+
+                  <TextView
+                      android:id="@+id/widget_last_purchase_meta"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="Escáner activo esperando notificaciones"
+                      android:textColor="#5E5B52"
+                      android:textSize="10sp"
+                      android:singleLine="true" />
+              </LinearLayout>
+
+              <LinearLayout
+                  android:id="@+id/widget_agent_reply_box"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="6dp"
+                  android:background="@drawable/widget_agent_reply_bg"
+                  android:padding="7dp"
+                  android:orientation="vertical">
+
+                  <TextView
+                      android:id="@+id/widget_agent_reply_text"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="Agente: Toca abajo para preguntarme si ya registré tu compra o anotar un gasto."
+                      android:textColor="#0D7A5F"
+                      android:textStyle="bold"
+                      android:textSize="10sp"
+                      android:maxLines="2" />
+              </LinearLayout>
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="7dp"
+                  android:orientation="horizontal">
+
+                  <TextView
+                      android:id="@+id/widget_btn_ask_agent"
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1.2"
+                      android:background="@drawable/widget_btn_emerald"
+                      android:gravity="center"
+                      android:paddingTop="8dp"
+                      android:paddingBottom="8dp"
+                      android:layout_marginRight="4dp"
+                      android:text="💬 Hablar Agente"
+                      android:textColor="#FFFFFF"
+                      android:textStyle="bold"
+                      android:textSize="10sp" />
+
+                  <TextView
+                      android:id="@+id/widget_btn_voice_agent"
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="0.75"
+                      android:background="@drawable/widget_btn_emerald"
+                      android:gravity="center"
+                      android:paddingTop="8dp"
+                      android:paddingBottom="8dp"
+                      android:layout_marginLeft="2dp"
+                      android:layout_marginRight="2dp"
+                      android:text="🎤 Voz"
+                      android:textColor="#FFFFFF"
+                      android:textStyle="bold"
+                      android:textSize="10sp" />
+
+                  <TextView
+                      android:id="@+id/widget_btn_check_purchase"
+                      android:layout_width="0dp"
+                      android:layout_height="wrap_content"
+                      android:layout_weight="1.15"
+                      android:background="@drawable/widget_btn_terracotta"
+                      android:gravity="center"
+                      android:paddingTop="8dp"
+                      android:paddingBottom="8dp"
+                      android:layout_marginLeft="4dp"
+                      android:text="✓ ¿Registró compra?"
+                      android:textColor="#FFFFFF"
+                      android:textStyle="bold"
+                      android:textSize="10sp" />
+              </LinearLayout>
+          </LinearLayout>
+          EOF
+
+          # 1. Proveedor Nativo del Widget de Pantalla de Inicio
+          cat << 'EOF' > "$JAVA_DIR/MisFinanzasAppWidgetProvider.java"
+          package com.misfinanzas.personal.a36;
+
+          import android.app.PendingIntent;
+          import android.appwidget.AppWidgetManager;
+          import android.appwidget.AppWidgetProvider;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.widget.RemoteViews;
+
+          public class MisFinanzasAppWidgetProvider extends AppWidgetProvider {
+              public static final String ACTION_REFRESH_WIDGET = "com.misfinanzas.personal.a36.ACTION_REFRESH_WIDGET";
+              public static final String ACTION_CHECK_LAST_PURCHASE = "com.misfinanzas.personal.a36.ACTION_CHECK_LAST_PURCHASE";
+
+              @Override
+              public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
+                  for (int widgetId : appWidgetIds) {
+                      updateSingleWidget(context, appWidgetManager, widgetId);
+                  }
+              }
+
+              @Override
+              public void onReceive(Context context, Intent intent) {
+                  super.onReceive(context, intent);
+                  if (intent == null || intent.getAction() == null) return;
+                  String action = intent.getAction();
+
+                  if (ACTION_REFRESH_WIDGET.equals(action)) {
+                      if (BankNotificationListener.instance != null) {
+                          BankNotificationListener.instance.scanAllActiveNotifications();
+                      }
+                      SharedPreferences prefs = context.getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                      prefs.edit().putString("widget_agent_reply", "Escáner sincronizado ahora mismo. Datos actualizados en vivo.").apply();
+                      updateAllWidgets(context);
+                  } else if (ACTION_CHECK_LAST_PURCHASE.equals(action)) {
+                      if (BankNotificationListener.instance != null) {
+                          BankNotificationListener.instance.scanAllActiveNotifications();
+                      }
+                      SharedPreferences prefs = context.getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                      String lastTitle = prefs.getString("widget_last_title", "Sin compras registradas hoy");
+                      String lastMeta = prefs.getString("widget_last_meta", "");
+                      String reply;
+                      if (lastTitle == null || lastTitle.contains("Sin compras")) {
+                          reply = "Revisé el escáner y aún no hay compras registradas hoy. Toca 'Hablar Agente' para anotar una.";
+                      } else {
+                          reply = "Sí, ya registré tu última compra: " + lastTitle + " (" + lastMeta + "). Sin duplicados.";
+                      }
+                      prefs.edit().putString("widget_agent_reply", reply).apply();
+                      updateAllWidgets(context);
+                  }
+              }
+
+              public static void updateAllWidgets(Context context) {
+                  try {
+                      AppWidgetManager manager = AppWidgetManager.getInstance(context);
+                      ComponentName componentName = new ComponentName(context, MisFinanzasAppWidgetProvider.class);
+                      int[] ids = manager.getAppWidgetIds(componentName);
+                      if (ids != null && ids.length > 0) {
+                          for (int id : ids) {
+                              updateSingleWidget(context, manager, id);
+                          }
+                      }
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              public static void updateSingleWidget(Context context, AppWidgetManager manager, int appWidgetId) {
+                  try {
+                      SharedPreferences prefs = context.getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                      String disponible = prefs.getString("widget_disponible", "$0");
+                      String gastos = prefs.getString("widget_gastos", "$0");
+                      String fijos = prefs.getString("widget_fijos", "$0");
+                      String lastTitle = prefs.getString("widget_last_title", "Sin compras registradas hoy");
+                      String lastMeta = prefs.getString("widget_last_meta", "Escáner 24/7 activo esperando notificaciones");
+                      String agentReply = prefs.getString("widget_agent_reply", "Toca abajo para preguntarme si ya registré tu compra o anotar un gasto.");
+
+                      RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_mis_finanzas);
+                      views.setTextViewText(R.id.widget_disponible_val, disponible);
+                      views.setTextViewText(R.id.widget_gastos_val, gastos);
+                      views.setTextViewText(R.id.widget_fijos_val, fijos);
+                      views.setTextViewText(R.id.widget_last_purchase_title, lastTitle);
+                      views.setTextViewText(R.id.widget_last_purchase_meta, lastMeta);
+                      views.setTextViewText(R.id.widget_agent_reply_text, "Agente: " + agentReply);
+
+                      int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+
+                      // Abrir app al tocar tarjeta superior
+                      Intent openAppIntent = new Intent(context, MainActivity.class);
+                      openAppIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                      PendingIntent openAppPi = PendingIntent.getActivity(context, 200, openAppIntent, flags);
+                      views.setOnClickPendingIntent(R.id.widget_last_purchase_box, openAppPi);
+
+                      // Botón Refrescar / Escanear
+                      Intent refreshIntent = new Intent(context, MisFinanzasAppWidgetProvider.class);
+                      refreshIntent.setAction(ACTION_REFRESH_WIDGET);
+                      PendingIntent refreshPi = PendingIntent.getBroadcast(context, 201, refreshIntent, flags);
+                      views.setOnClickPendingIntent(R.id.widget_btn_refresh, refreshPi);
+
+                      // Botón Verificar Compra al instante en el mismo widget
+                      Intent checkIntent = new Intent(context, MisFinanzasAppWidgetProvider.class);
+                      checkIntent.setAction(ACTION_CHECK_LAST_PURCHASE);
+                      PendingIntent checkPi = PendingIntent.getBroadcast(context, 202, checkIntent, flags);
+                      views.setOnClickPendingIntent(R.id.widget_btn_check_purchase, checkPi);
+
+                      // Botón Hablar con Agente (abre diálogo flotante rápido sobre la pantalla de inicio)
+                      Intent askIntent = new Intent(context, WidgetAgentDialogActivity.class);
+                      askIntent.putExtra("mode", "chat");
+                      askIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                      PendingIntent askPi = PendingIntent.getActivity(context, 203, askIntent, flags);
+                      views.setOnClickPendingIntent(R.id.widget_btn_ask_agent, askPi);
+                      views.setOnClickPendingIntent(R.id.widget_agent_reply_box, askPi);
+
+                      // Botón Voz en el Widget
+                      Intent voiceIntent = new Intent(context, WidgetAgentDialogActivity.class);
+                      voiceIntent.putExtra("mode", "voice");
+                      voiceIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                      PendingIntent voicePi = PendingIntent.getActivity(context, 204, voiceIntent, flags);
+                      views.setOnClickPendingIntent(R.id.widget_btn_voice_agent, voicePi);
+
+                      manager.updateAppWidget(appWidgetId, views);
+                  } catch (Exception ignored) {
+                  }
+              }
+          }
+          EOF
+
+          # 2. Actividad Flotante Rápida del Agente desde el Widget (sin necesidad de abrir toda la app)
+          cat << 'EOF' > "$JAVA_DIR/WidgetAgentDialogActivity.java"
+          package com.misfinanzas.personal.a36;
+
+          import android.app.Activity;
+          import android.content.ActivityNotFoundException;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.speech.RecognizerIntent;
+          import android.view.Gravity;
+          import android.view.ViewGroup;
+          import android.view.Window;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import java.text.NumberFormat;
+          import java.util.ArrayList;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          public class WidgetAgentDialogActivity extends Activity {
+              private static final int REQ_VOICE = 901;
+              private TextView answerView;
+              private TextView summaryView;
+              private EditText inputField;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+                  LinearLayout outer = new LinearLayout(this);
+                  outer.setOrientation(LinearLayout.VERTICAL);
+                  outer.setPadding(42, 42, 42, 42);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(Color.parseColor("#181815"));
+                  bg.setCornerRadius(44f);
+                  bg.setStroke(3, Color.parseColor("#0D7A5F"));
+                  outer.setBackground(bg);
+
+                  TextView title = new TextView(this);
+                  title.setText("🤖 Agente Mis Finanzas • Widget en Vivo");
+                  title.setTextColor(Color.parseColor("#F6F4EE"));
+                  title.setTextSize(16f);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  outer.addView(title);
+
+                  SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                  String disp = prefs.getString("widget_disponible", "$0");
+                  String lastTitle = prefs.getString("widget_last_title", "Sin compras registradas hoy");
+
+                  summaryView = new TextView(this);
+                  summaryView.setText("Disponible real: " + disp + "\nÚltima compra: " + lastTitle);
+                  summaryView.setTextColor(Color.parseColor("#A6A297"));
+                  summaryView.setTextSize(12f);
+                  summaryView.setPadding(0, 12, 0, 18);
+                  outer.addView(summaryView);
+
+                  answerView = new TextView(this);
+                  answerView.setText(prefs.getString("widget_agent_reply", "¿Qué deseas verificar o registrar hoy?"));
+                  answerView.setTextColor(Color.parseColor("#10B981"));
+                  answerView.setTextSize(13f);
+                  answerView.setPadding(28, 24, 28, 24);
+                  GradientDrawable ansBg = new GradientDrawable();
+                  ansBg.setColor(Color.parseColor("#121210"));
+                  ansBg.setCornerRadius(28f);
+                  ansBg.setStroke(2, Color.parseColor("#2C2A24"));
+                  answerView.setBackground(ansBg);
+                  outer.addView(answerView);
+
+                  LinearLayout chipsRow = new LinearLayout(this);
+                  chipsRow.setOrientation(LinearLayout.HORIZONTAL);
+                  chipsRow.setPadding(0, 20, 0, 14);
+
+                  Button chipCheck = createStyledButton("✓ ¿Ya registraste la compra?", "#C25E00");
+                  chipCheck.setOnClickListener(v -> processAgentCommand("¿Ya registraste mi última compra?"));
+                  LinearLayout.LayoutParams lpChip1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                  lpChip1.rightMargin = 8;
+                  chipsRow.addView(chipCheck, lpChip1);
+
+                  Button chipVoice = createStyledButton("🎤 Dictar por Voz", "#262420");
+                  chipVoice.setOnClickListener(v -> startVoiceRecognition());
+                  LinearLayout.LayoutParams lpChip2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.8f);
+                  lpChip2.leftMargin = 8;
+                  chipsRow.addView(chipVoice, lpChip2);
+
+                  outer.addView(chipsRow);
+
+                  inputField = new EditText(this);
+                  inputField.setHint("Ej: ¿Registraste la compra? o Gasté 35 mil en almuerzo");
+                  inputField.setHintTextColor(Color.parseColor("#78746A"));
+                  inputField.setTextColor(Color.WHITE);
+                  inputField.setTextSize(13f);
+                  inputField.setPadding(28, 24, 28, 24);
+                  GradientDrawable inBg = new GradientDrawable();
+                  inBg.setColor(Color.parseColor("#121210"));
+                  inBg.setCornerRadius(24f);
+                  inBg.setStroke(2, Color.parseColor("#38352E"));
+                  inputField.setBackground(inBg);
+                  outer.addView(inputField);
+
+                  LinearLayout actionsRow = new LinearLayout(this);
+                  actionsRow.setOrientation(LinearLayout.HORIZONTAL);
+                  actionsRow.setGravity(Gravity.END);
+                  actionsRow.setPadding(0, 22, 0, 0);
+
+                  Button closeBtn = createStyledButton("Cerrar", "#262420");
+                  closeBtn.setOnClickListener(v -> finish());
+                  LinearLayout.LayoutParams lpClose = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  lpClose.rightMargin = 14;
+                  actionsRow.addView(closeBtn, lpClose);
+
+                  Button sendBtn = createStyledButton("Preguntar / Ejecutar", "#0D7A5F");
+                  sendBtn.setOnClickListener(v -> {
+                      String q = inputField.getText().toString().trim();
+                      if (!q.isEmpty()) {
+                          processAgentCommand(q);
+                          inputField.setText("");
+                      }
+                  });
+                  actionsRow.addView(sendBtn);
+
+                  outer.addView(actionsRow);
+                  setContentView(outer);
+
+                  String mode = getIntent() != null ? getIntent().getStringExtra("mode") : null;
+                  String initialPrompt = getIntent() != null ? getIntent().getStringExtra("initialPrompt") : null;
+                  if (initialPrompt != null && !initialPrompt.trim().isEmpty()) {
+                      processAgentCommand(initialPrompt.trim());
+                  } else if ("voice".equals(mode)) {
+                      startVoiceRecognition();
+                  }
+              }
+
+              private Button createStyledButton(String text, String hexColor) {
+                  Button b = new Button(this);
+                  b.setText(text);
+                  b.setAllCaps(false);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(11.5f);
+                  b.setPadding(26, 18, 26, 18);
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(Color.parseColor(hexColor));
+                  d.setCornerRadius(22f);
+                  b.setBackground(d);
+                  return b;
+              }
+
+              private void startVoiceRecognition() {
+                  try {
+                      Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                      intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                      intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-CO");
+                      intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Habla con tu Agente de Mis Finanzas...");
+                      startActivityForResult(intent, REQ_VOICE);
+                  } catch (ActivityNotFoundException e) {
+                      answerView.setText("Tu teléfono no tiene dictado por voz activo. Escribe tu pregunta abajo.");
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == REQ_VOICE && resultCode == RESULT_OK && data != null) {
+                      ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                      if (results != null && !results.isEmpty()) {
+                          String spoken = results.get(0);
+                          inputField.setText(spoken);
+                          processAgentCommand(spoken);
+                      }
+                  }
+              }
+
+              private void processAgentCommand(String rawQuery) {
+                  if (BankNotificationListener.instance != null) {
+                      BankNotificationListener.instance.scanAllActiveNotifications();
+                  }
+                  SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
+                  String low = rawQuery.toLowerCase(Locale.ROOT);
+                  String reply;
+
+                  if (low.contains("registr") || low.contains("ultima compra") || low.contains("última compra") || low.contains("ya quedo") || low.contains("ya quedó")) {
+                      String lastTitle = prefs.getString("widget_last_title", "Sin compras registradas hoy");
+                      String lastMeta = prefs.getString("widget_last_meta", "");
+                      if (lastTitle == null || lastTitle.contains("Sin compras")) {
+                          reply = "Revisé el escáner en vivo y aún no tienes compras registradas hoy. Si deseas anotar una, dime por ejemplo: 'Gasté 35 mil en almuerzo'.";
+                      } else {
+                          reply = "✅ Sí, tu última compra ya está registrada: " + lastTitle + " (" + lastMeta + "). El filtro anti-duplicados evitó cobros repetidos.";
+                      }
+                  } else if (low.contains("disponible") || low.contains("saldo") || low.contains("cuanto tengo") || low.contains("cuánto tengo")) {
+                      String disp = prefs.getString("widget_disponible", "$0");
+                      String gastos = prefs.getString("widget_gastos", "$0");
+                      String fijos = prefs.getString("widget_fijos", "$0");
+                      reply = "💰 Tu disponible real es " + disp + " (Compras del mes: " + gastos + " • Pagos fijos pendientes: " + fijos + ").";
+                  } else {
+                      long amount = extractAmountFromNaturalText(low);
+                      if (amount > 0) {
+                          boolean isIncome = low.contains("recib") || low.contains("gan") || low.contains("ingres") || low.contains("abono") || low.contains("nomina") || low.contains("nómina");
+                          String bank = "Agente Widget";
+                          if (low.contains("nequi")) bank = "Nequi";
+                          else if (low.contains("bancolombia")) bank = "Bancolombia";
+                          else if (low.contains("daviplata")) bank = "Daviplata";
+                          else if (low.contains("nu")) bank = "Nu";
+
+                          String syntheticNotif = (isIncome ? "Recibiste $" : "Compra aprobada por $") + amount + " en " + rawQuery;
+                          BankNotificationListener.saveAndBroadcastNotification(this, bank, syntheticNotif, System.currentTimeMillis());
+
+                          NumberFormat nf = NumberFormat.getCurrencyInstance(new Locale("es", "CO"));
+                          nf.setMaximumFractionDigits(0);
+                          String formattedAmt = nf.format(amount);
+                          reply = "✅ Listo, registré desde el widget: " + formattedAmt + " (" + bank + "). Tus gráficas y tablas ya se actualizaron.";
+                      } else {
+                          String lastTitle = prefs.getString("widget_last_title", "Sin compras registradas hoy");
+                          String disp = prefs.getString("widget_disponible", "$0");
+                          reply = "Disponible real: " + disp + ". Última compra: " + lastTitle + ". Puedes decirme 'Gasté 25 mil en taxi' o '¿Ya registraste mi compra?'.";
+                      }
+                  }
+
+                  prefs.edit().putString("widget_agent_reply", reply).apply();
+                  answerView.setText(reply);
+                  summaryView.setText("Disponible real: " + prefs.getString("widget_disponible", "$0") + "\nÚltima compra: " + prefs.getString("widget_last_title", "Sin compras registradas hoy"));
+                  MisFinanzasAppWidgetProvider.updateAllWidgets(this);
+              }
+
+              private long extractAmountFromNaturalText(String text) {
+                  try {
+                      Matcher mMil = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*mil\\b").matcher(text);
+                      if (mMil.find()) {
+                          double v = Double.parseDouble(mMil.group(1).replace(",", "."));
+                          return Math.round(v * 1000);
+                      }
+                      Matcher mMillon = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*millon").matcher(text);
+                      if (mMillon.find()) {
+                          double v = Double.parseDouble(mMillon.group(1).replace(",", "."));
+                          return Math.round(v * 1000000);
+                      }
+                      Matcher mNum = Pattern.compile("\\$?\\s*(\\d{1,3}(?:[.,]\\d{3})+|\\d{4,9})").matcher(text);
+                      if (mNum.find()) {
+                          String raw = mNum.group(1).replace(".", "").replace(",", "");
+                          return Long.parseLong(raw);
+                      }
+                  } catch (Exception ignored) {
+                  }
+                  return 0L;
+              }
+          }
+          EOF
+
+          # 3. Servicio Nativo Android de Lectura 100% Automática de Notificaciones (con Filtro de Fecha, Anti-Duplicados y Sincronización al Widget)
           cat << 'EOF' > "$JAVA_DIR/BankNotificationListener.java"
           package com.misfinanzas.personal.a36;
 
@@ -54,6 +760,12 @@ jobs:
           import android.os.Bundle;
           import android.service.notification.NotificationListenerService;
           import android.service.notification.StatusBarNotification;
+          import java.text.NumberFormat;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
           import org.json.JSONArray;
           import org.json.JSONObject;
 
@@ -64,12 +776,12 @@ jobs:
               public void onListenerConnected() {
                   super.onListenerConnected();
                   instance = this;
-                  // Inicializar fecha mínima de captura al momento de instalar/conectar por primera vez
                   SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
                   if (!prefs.contains("min_capture_time")) {
                       prefs.edit().putLong("min_capture_time", System.currentTimeMillis() - 120000L).apply();
                   }
                   scanAllActiveNotifications();
+                  MisFinanzasAppWidgetProvider.updateAllWidgets(this);
               }
 
               @Override
@@ -105,7 +817,6 @@ jobs:
                       String pkg = sbn.getPackageName() != null ? sbn.getPackageName() : "";
                       if (pkg.equals(getPackageName()) || pkg.contains("systemui") || pkg.contains("android.providers.downloads")) return;
 
-                      // Verificar que la notificación no sea más antigua que el plazo configurado por el usuario
                       long postTime = sbn.getPostTime() > 0 ? sbn.getPostTime() : System.currentTimeMillis();
                       SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", Context.MODE_PRIVATE);
                       long minCaptureTime = prefs.getLong("min_capture_time", 0L);
@@ -171,13 +882,12 @@ jobs:
                           return;
                       }
 
-                      // Registro persistente de las últimas 60 notificaciones vistas para no volver a procesarlas nunca
                       String normalizedHash = String.valueOf(fullText.toLowerCase().replaceAll("\\s+", " ").trim().hashCode());
                       String seenHashesJson = prefs.getString("seen_hashes", "[]");
                       JSONArray seenArr = new JSONArray(seenHashesJson);
                       for (int i = 0; i < seenArr.length(); i++) {
                           if (normalizedHash.equals(seenArr.optString(i))) {
-                              return; // Ya fue capturada antes, ignorar duplicado
+                              return;
                           }
                       }
 
@@ -199,10 +909,23 @@ jobs:
                       item.put("time", notifTime);
                       arr.put(item);
 
+                      // Actualizar resumen inmediato del Widget incluso con la app cerrada
+                      String previewTitle = fullText.length() > 48 ? fullText.substring(0, 48) + "..." : fullText;
+                      Matcher m = Pattern.compile("\\$\\s*([0-9.,]+)").matcher(fullText);
+                      if (m.find()) {
+                          previewTitle = "Compra $" + m.group(1) + " • " + appName;
+                      }
+                      String timeStr = new SimpleDateFormat("dd MMM, HH:mm", new Locale("es", "CO")).format(new Date(notifTime));
+
                       prefs.edit()
                           .putString("queue", arr.toString())
                           .putString("seen_hashes", seenArr.toString())
+                          .putString("widget_last_title", previewTitle)
+                          .putString("widget_last_meta", appName + " • " + timeStr + " • Captura Automática")
+                          .putString("widget_agent_reply", "✅ Nueva notificación registrada automáticamente: " + previewTitle)
                           .apply();
+
+                      MisFinanzasAppWidgetProvider.updateAllWidgets(ctx);
 
                       if (MainActivity.instance != null) {
                           MainActivity.instance.pushPendingToWebView();
@@ -213,7 +936,7 @@ jobs:
           }
           EOF
 
-          # 2. Receptor Nativo de SMS Bancarios (captura mensajes de texto de compras y bancos automáticamente)
+          # 4. Receptor Nativo de SMS Bancarios
           cat << 'EOF' > "$JAVA_DIR/SmsBankReceiver.java"
           package com.misfinanzas.personal.a36;
 
@@ -263,7 +986,7 @@ jobs:
           }
           EOF
 
-          # 3. MainActivity con solicitud automática de permisos al iniciar + diálogo nativo + empuje en vivo al WebView
+          # 5. MainActivity con solicitud automática de permisos + puente al WebView + sincronización en vivo con el Widget
           cat << 'EOF' > "$JAVA_DIR/MainActivity.java"
           package com.misfinanzas.personal.a36;
 
@@ -283,6 +1006,7 @@ jobs:
           import com.getcapacitor.BridgeActivity;
           import java.util.ArrayList;
           import java.util.List;
+          import org.json.JSONObject;
 
           public class MainActivity extends BridgeActivity {
               public static MainActivity instance;
@@ -304,14 +1028,11 @@ jobs:
                       WebView wv = this.bridge.getWebView();
                       wv.getSettings().setJavaScriptEnabled(true);
                       wv.addJavascriptInterface(new AndroidNativeBridge(), "AndroidNativeBridge");
-                      // Recargar una vez para que window.AndroidNativeBridge esté disponible desde el inicio en JS
                       wv.reload();
                   }
 
-                  // Pedir permisos en tiempo de ejecución automáticamente al abrir la app
                   requestRuntimePermissionsAutomatically();
 
-                  // Si aún no tiene activado el lector de notificaciones en Android, mostrar diálogo nativo para activarlo
                   new Handler(Looper.getMainLooper()).postDelayed(() -> {
                       if (!checkNotificationListenerGranted()) {
                           showNativePermissionSetupDialog();
@@ -319,6 +1040,7 @@ jobs:
                   }, 1200);
 
                   syncHandler.postDelayed(syncRunnable, 2000);
+                  MisFinanzasAppWidgetProvider.updateAllWidgets(this);
               }
 
               @Override
@@ -329,6 +1051,7 @@ jobs:
                       BankNotificationListener.instance.scanAllActiveNotifications();
                   }
                   pushPendingToWebView();
+                  MisFinanzasAppWidgetProvider.updateAllWidgets(this);
               }
 
               @Override
@@ -469,14 +1192,43 @@ jobs:
                       SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
                       prefs.edit().putLong("min_capture_time", timestampMs).apply();
                   }
+
+                  @JavascriptInterface
+                  public void syncWidgetSummary(String jsonPayload) {
+                      try {
+                          JSONObject obj = new JSONObject(jsonPayload);
+                          SharedPreferences prefs = getSharedPreferences("mis_finanzas_notifs", MODE_PRIVATE);
+                          SharedPreferences.Editor ed = prefs.edit();
+                          if (obj.has("disponibleFormatted")) ed.putString("widget_disponible", obj.optString("disponibleFormatted", "$0"));
+                          if (obj.has("gastosMesFormatted")) ed.putString("widget_gastos", obj.optString("gastosMesFormatted", "$0"));
+                          if (obj.has("fijosPendientesFormatted")) ed.putString("widget_fijos", obj.optString("fijosPendientesFormatted", "$0"));
+                          if (obj.has("lastPurchaseTitle")) ed.putString("widget_last_title", obj.optString("lastPurchaseTitle", "Sin compras registradas hoy"));
+                          if (obj.has("lastPurchaseMeta")) ed.putString("widget_last_meta", obj.optString("lastPurchaseMeta", ""));
+                          if (obj.has("agentReply")) ed.putString("widget_agent_reply", obj.optString("agentReply", ""));
+                          ed.apply();
+                          MisFinanzasAppWidgetProvider.updateAllWidgets(MainActivity.this);
+                      } catch (Exception ignored) {
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public void openWidgetAgentDialog(String initialPrompt) {
+                      Intent intent = new Intent(MainActivity.this, WidgetAgentDialogActivity.class);
+                      intent.putExtra("mode", "chat");
+                      if (initialPrompt != null && !initialPrompt.isEmpty()) {
+                          intent.putExtra("initialPrompt", initialPrompt);
+                      }
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(intent);
+                  }
               }
           }
           EOF
 
-          # Registrar permisos y servicios automáticos en AndroidManifest.xml
+          # Registrar permisos, servicios automáticos y el Widget interactivo en AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" /><uses-permission android:name="android.permission.RECEIVE_SMS" /><uses-permission android:name="android.permission.READ_SMS" /><uses-permission android:name="android.permission.FOREGROUND_SERVICE" /><application|' "$MANIFEST"
-          sed -i 's|</application>|<service android:name=".BankNotificationListener" android:label="Mis Finanzas Lector Automatico" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service><receiver android:name=".SmsBankReceiver" android:permission="android.permission.BROADCAST_SMS" android:exported="true"><intent-filter android:priority="999"><action android:name="android.provider.Telephony.SMS_RECEIVED" /></intent-filter></receiver></application>|' "$MANIFEST"
+          sed -i 's|</application>|<service android:name=".BankNotificationListener" android:label="Mis Finanzas Lector Automatico" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service><receiver android:name=".SmsBankReceiver" android:permission="android.permission.BROADCAST_SMS" android:exported="true"><intent-filter android:priority="999"><action android:name="android.provider.Telephony.SMS_RECEIVED" /></intent-filter></receiver><receiver android:name=".MisFinanzasAppWidgetProvider" android:label="Mis Finanzas • Agente y Saldo" android:exported="true"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /><action android:name="com.misfinanzas.personal.a36.ACTION_REFRESH_WIDGET" /><action android:name="com.misfinanzas.personal.a36.ACTION_CHECK_LAST_PURCHASE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/mis_finanzas_widget_info" /></receiver><activity android:name=".WidgetAgentDialogActivity" android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar" android:excludeFromRecents="true" android:exported="true" /></application>|' "$MANIFEST"
 
           # Generar certificado personal propio
           mkdir -p ~/.android
@@ -495,7 +1247,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Subir APK con Lector Automático de Notificaciones y SMS
+      - name: Subir APK con Lector Automático 24/7 y Widget de Agente
         uses: actions/upload-artifact@v4
         with:
           name: app-finanzas-apk

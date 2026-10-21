@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+app/build/
+.gradle/
+.build-outputs/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+local.properties
+.env
+.DS_Store
+public/assets/aistudio/
